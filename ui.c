@@ -34,9 +34,10 @@ typedef struct
     int drag;
 } Editor;
 
-static void render(App *app);
+static void render(App *app, gboolean rebuild_rows);
 static void start_job(App *app, JobType type, gboolean allow_busy);
 static void action(GtkButton *button, gpointer data);
+static void new_table_dialog(App *app);
 static const double colors[][3]={{233/255.,215/255.,174/255.},{195/255.,213/255.,232/255.},{212/255.,204/255.,232/255.},{186/255.,219/255.,197/255.}};
 static const double text_colors[][3]={{114/255.,89/255.,31/255.},{63/255.,92/255.,123/255.},{100/255.,82/255.,130/255.},{55/255.,99/255.,71/255.}};
 
@@ -369,9 +370,13 @@ static gboolean map_press(GtkWidget *widget, GdkEventButton *event, gpointer dat
     {
         Tile tile=g_array_index(list, Tile, i);
         if (event->x>=tile.x && event->x<=tile.x+tile.width)
-        { app->selected=tile.item.number; app->free_start=tile.item.start; render(app); break; }
+        { app->selected=tile.item.number; app->free_start=tile.item.start; render(app,FALSE); break; }
     }
-    g_array_unref(list); return TRUE;
+    g_array_unref(list);
+    Disk *disk=app->disks->pdata[app->active];
+    gboolean needs_table=strcmp(disk->label,"gpt") && strcmp(disk->label,"dos");
+    if (event->type==GDK_2BUTTON_PRESS && needs_table) new_table_dialog(app);
+    return TRUE;
 }
 
 /* Native list selection and the map always point to the same model interval. */
@@ -381,7 +386,15 @@ static void row_selected(GtkListBox *box, GtkListBoxRow *row, gpointer data)
     if (!row) return;
     Item *item=g_object_get_data(G_OBJECT(row), "item");
     if (app->selected==item->number && app->free_start==item->start) return;
-    app->selected=item->number; app->free_start=item->start; render(app);
+    app->selected=item->number; app->free_start=item->start; render(app,FALSE);
+}
+
+/* Double-clicking a row offers a table only when GPT or MBR is absent. */
+static void row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer data)
+{
+    App *app=data; row_selected(box,row,app);
+    Disk *disk=app->disks->pdata[app->active];
+    if (strcmp(disk->label,"gpt") && strcmp(disk->label,"dos")) new_table_dialog(app);
 }
 
 /* Switch devices without discarding pending operations on the previous disk. */
@@ -391,7 +404,7 @@ static void disk_selected(GtkListBox *box, GtkListBoxRow *row, gpointer data)
     if (!row) return;
     guint index=GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(row), "index"));
     if (index==app->active) return;
-    app->active=index; app->selected=-1; app->free_start=0; render(app);
+    app->active=index; app->selected=-1; app->free_start=0; render(app,TRUE);
 }
 
 /* Build a compact sidebar row with its inventory-derived device icon. */
@@ -420,11 +433,13 @@ static void render_sidebar(App *app)
 }
 
 /* Update the Workspace while all state remains in the model and Undo snapshots. */
-static void render(App *app)
+static void render(App *app, gboolean rebuild_rows)
 {
     if (!app->disks->len) return;
     Disk *disk=app->disks->pdata[app->active]; Item chosen=selection(app); Partition *part=selected_part(app);
-    render_sidebar(app);
+    g_signal_handlers_block_by_func(app->sidebar,disk_selected,app);
+    gtk_list_box_select_row(GTK_LIST_BOX(app->sidebar),gtk_list_box_get_row_at_index(GTK_LIST_BOX(app->sidebar),app->active));
+    g_signal_handlers_unblock_by_func(app->sidebar,disk_selected,app);
     char *title=g_strdup_printf("%s · %s — Partition Manager", disk->title, disk->path);
     gtk_window_set_title(GTK_WINDOW(app->window), title); g_free(title);
     gtk_label_set_text(GTK_LABEL(app->heading), disk->title);
@@ -458,11 +473,18 @@ static void render(App *app)
     gtk_widget_set_sensitive(app->grow, editable && can_grow(disk,part));
     gtk_widget_set_sensitive(app->format, editable && part && part->number && !part->readonly);
     gtk_widget_set_sensitive(app->remove, editable && part && part->number);
-    g_signal_handlers_block_by_func(app->rows, row_selected, app); clear(app->rows);
+    g_signal_handlers_block_by_func(app->rows, row_selected, app);
+    if (rebuild_rows) clear(app->rows);
     GArray *list=items(disk);
     for (guint i=0; i<list->len; i++)
     {
         Item item=g_array_index(list,Item,i); Partition *entry=item.number>=0?find_part(disk->parts,item.number):NULL;
+        if (!rebuild_rows)
+        {
+            if (item.number==chosen.number && item.start==chosen.start)
+                gtk_list_box_select_row(GTK_LIST_BOX(app->rows),gtk_list_box_get_row_at_index(GTK_LIST_BOX(app->rows),i));
+            continue;
+        }
         GtkWidget *row=gtk_list_box_row_new(), *box=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,12), *text=gtk_box_new(GTK_ORIENTATION_VERTICAL,2);
         style(row,"partition-row"); gtk_widget_set_size_request(row,-1,57);
         char *name=entry?part_title(entry):g_strdup(item.number==-2?"Unaddressed space":"Unallocated space");
@@ -754,7 +776,7 @@ static void edit_partition(App *app, EditMode mode)
                 if (mode!=FORMAT) { g_free(part->type); part->type=g_strdup(type); }
             }
             if (mode==GROW) part->grow=*part->fs!=0;
-            render(app);
+            render(app,TRUE);
         }
     }
     gtk_widget_destroy(editor.dialog);
@@ -838,6 +860,24 @@ static gboolean discard_plan(App *app, const char *accept)
     gtk_widget_show_all(dialog); int response=gtk_dialog_run(GTK_DIALOG(dialog)); gtk_widget_destroy(dialog); return response==GTK_RESPONSE_ACCEPT;
 }
 
+/* Buttons and double-clicks share the same explicit, cancellable new-table dialog. */
+static void new_table_dialog(App *app)
+{
+    Disk *disk=app->disks->pdata[app->active];
+    GtkWidget *dialog=make_dialog(app,"New partition table",500,"Add to plan");
+    GtkWidget *box=g_object_get_data(G_OBJECT(dialog),"body"), *combo=gtk_combo_box_text_new(); gtk_box_set_spacing(GTK_BOX(box),12);
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo),"gpt","GPT — Modern systems"); gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo),"dos","MBR — Legacy systems"); gtk_combo_box_set_active(GTK_COMBO_BOX(combo),0);
+    gtk_box_pack_start(GTK_BOX(box),label("This replaces all existing partitions on the selected device.",NULL),FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(box),combo,FALSE,FALSE,0);
+    gtk_widget_show_all(dialog);
+    if (gtk_dialog_run(GTK_DIALOG(dialog))==GTK_RESPONSE_ACCEPT)
+    {
+        remember(app); GError *error=NULL;
+        if (!engine_new_table(disk,gtk_combo_box_get_active_id(GTK_COMBO_BOX(combo)),&error)) { message(app,"Cannot create table",error->message,NULL); g_clear_error(&error); }
+        app->selected=-1; app->free_start=0; render(app,TRUE);
+    }
+    gtk_widget_destroy(dialog);
+}
+
 /* Route the small toolbar directly to its focused native dialog or model edit. */
 static void action(GtkButton *widget, gpointer data)
 {
@@ -861,30 +901,16 @@ static void action(GtkButton *widget, gpointer data)
     {
         remember(app);
         for (guint i=0; i<disk->parts->len; i++) if (disk->parts->pdata[i]==part) { g_ptr_array_remove_index(disk->parts,i); break; }
-        app->selected=-1; app->free_start=0; render(app);
+        app->selected=-1; app->free_start=0; render(app,TRUE);
     }
-    if (!strcmp(command,"repair")) { remember(app); disk->last=capacity_last(disk); disk->repair=TRUE; render(app); }
+    if (!strcmp(command,"repair")) { remember(app); disk->last=capacity_last(disk); disk->repair=TRUE; render(app,TRUE); }
     if (!strcmp(command,"undo") && app->history->len)
     {
         Undo *undo=app->history->pdata[app->history->len-1]; app->active=undo->disk;
         disk_free(app->disks->pdata[app->active]); app->disks->pdata[app->active]=undo->before; undo->before=NULL;
-        g_ptr_array_remove_index(app->history,app->history->len-1); app->selected=-1; app->free_start=0; render(app);
+        g_ptr_array_remove_index(app->history,app->history->len-1); app->selected=-1; app->free_start=0; render(app,TRUE);
     }
-    if (!strcmp(command,"new-table"))
-    {
-        GtkWidget *dialog=make_dialog(app,"New partition table",500,"Add to plan");
-        GtkWidget *box=g_object_get_data(G_OBJECT(dialog),"body"), *combo=gtk_combo_box_text_new(); gtk_box_set_spacing(GTK_BOX(box),12);
-        gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo),"gpt","GPT — Modern systems"); gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo),"dos","MBR — Legacy systems"); gtk_combo_box_set_active(GTK_COMBO_BOX(combo),0);
-        gtk_box_pack_start(GTK_BOX(box),label("This replaces all existing partitions on the selected device.",NULL),FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(box),combo,FALSE,FALSE,0);
-        gtk_widget_show_all(dialog);
-        if (gtk_dialog_run(GTK_DIALOG(dialog))==GTK_RESPONSE_ACCEPT)
-        {
-            remember(app); GError *error=NULL;
-            if (!engine_new_table(disk,gtk_combo_box_get_active_id(GTK_COMBO_BOX(combo)),&error)) { message(app,"Cannot create table",error->message,NULL); g_clear_error(&error); }
-            app->selected=-1; app->free_start=0; render(app);
-        }
-        gtk_widget_destroy(dialog);
-    }
+    if (!strcmp(command,"new-table")) new_table_dialog(app);
     if (!strcmp(command,"review")) review(app);
     if (!strcmp(command,"save")) save_layout(app);
     if (!strcmp(command,"info")) properties(app,disk);
@@ -929,7 +955,7 @@ static void job_done(GObject *source, GAsyncResult *result, gpointer data)
     app->working=FALSE; gtk_spinner_stop(GTK_SPINNER(app->spinner)); gtk_widget_hide(app->spinner); gtk_widget_set_sensitive(app->body,TRUE);
     if (job->type==CHECK)
     {
-        render(app); message(app,error?"Partition-table check failed":"Partition table checked",error?error->message:"sfdisk completed the partition-table check. Filesystems were not checked.",job->log->str); g_clear_error(&error); return;
+        render(app,TRUE); message(app,error?"Partition-table check failed":"Partition table checked",error?error->message:"sfdisk completed the partition-table check. Filesystems were not checked.",job->log->str); g_clear_error(&error); return;
     }
     if (job->type==APPLY)
     {
@@ -944,7 +970,7 @@ static void job_done(GObject *source, GAsyncResult *result, gpointer data)
     g_ptr_array_unref(app->disks); app->disks=disks; g_ptr_array_set_size(app->history,0);
     app->active=0; app->selected=-1; app->free_start=0;
     gtk_stack_set_visible_child_name(GTK_STACK(app->content),disks->len?"disk":"empty");
-    if (disks->len) render(app);
+    if (disks->len) { render_sidebar(app); render(app,TRUE); }
     else
     {
         render_sidebar(app);
@@ -1043,7 +1069,7 @@ int ui_run(int argc, char **argv, const char *only, gboolean readonly, gboolean 
     gtk_size_group_add_widget(app.size_group,size_header);
     gtk_box_pack_start(GTK_BOX(table_header),table_columns(name_header,fs_header),TRUE,TRUE,0); gtk_box_pack_start(GTK_BOX(table_header),size_header,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(column),table_header,FALSE,FALSE,0);
     app.row_scroll=gtk_scrolled_window_new(NULL,NULL); gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(app.row_scroll),TRUE); gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(app.row_scroll),342);
-    app.rows=gtk_list_box_new(); style(app.rows,"partition-list"); gtk_list_box_set_selection_mode(GTK_LIST_BOX(app.rows),GTK_SELECTION_SINGLE); gtk_container_add(GTK_CONTAINER(app.row_scroll),app.rows);
+    app.rows=gtk_list_box_new(); style(app.rows,"partition-list"); gtk_list_box_set_selection_mode(GTK_LIST_BOX(app.rows),GTK_SELECTION_SINGLE); gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(app.rows),FALSE); gtk_container_add(GTK_CONTAINER(app.row_scroll),app.rows);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(app.row_scroll),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC); gtk_box_pack_start(GTK_BOX(column),app.row_scroll,TRUE,TRUE,0); gtk_box_pack_start(GTK_BOX(editing),column,TRUE,TRUE,0);
     GtkWidget *details_clip=gtk_scrolled_window_new(NULL,NULL); gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(details_clip),GTK_POLICY_NEVER,GTK_POLICY_EXTERNAL);
     app.details=gtk_box_new(GTK_ORIENTATION_VERTICAL,0); style(app.details,"details"); gtk_widget_set_size_request(app.details,238,-1); gtk_container_add(GTK_CONTAINER(details_clip),app.details); gtk_box_pack_start(GTK_BOX(editing),details_clip,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(main),editing,TRUE,TRUE,0);
@@ -1053,6 +1079,7 @@ int ui_run(int argc, char **argv, const char *only, gboolean readonly, gboolean 
     app.undo=button(&app,"Undo","arrow-rotate-left","undo"); app.review=button(&app,"Review changes",NULL,"review"); style(app.review,"suggested-action");
     gtk_box_pack_start(GTK_BOX(footer),app.undo,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(footer),app.review,FALSE,FALSE,0); gtk_box_pack_end(GTK_BOX(outer),footer,FALSE,FALSE,0);
     g_signal_connect(app.sidebar,"row-selected",G_CALLBACK(disk_selected),&app); g_signal_connect(app.rows,"row-selected",G_CALLBACK(row_selected),&app);
+    g_signal_connect(app.rows,"row-activated",G_CALLBACK(row_activated),&app);
     g_signal_connect(app.map,"draw",G_CALLBACK(map_draw),&app); g_signal_connect(app.map,"button-press-event",G_CALLBACK(map_press),&app); g_signal_connect(app.window,"delete-event",G_CALLBACK(close_window),&app);
     gtk_widget_show_all(app.window); start_job(&app,SCAN,FALSE); gtk_main();
     g_ptr_array_unref(app.disks); g_ptr_array_unref(app.history); g_object_unref(app.size_group); g_free(app.only); return 0;

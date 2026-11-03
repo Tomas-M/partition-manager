@@ -5,6 +5,8 @@
 static guint phase, attempts;
 static GtkWidget *workspace;
 static int sidebar_width, details_width, map_width;
+static GtkListBoxRow *stable_rows[2];
+static guint clicks;
 
 /* Find semantic layout elements without depending on window coordinates. */
 static GtkWidget *styled(GtkWidget *root, const char *name)
@@ -102,11 +104,26 @@ static void drag(GtkWidget *area, double from, double to)
     g_signal_emit_by_name(area,"button-release-event",&release,&handled);
 }
 
+/* Queue complete pointer events through GTK's list-box gesture and release handling. */
+static void click_row(GtkListBoxRow *row)
+{
+    GdkWindow *window=gtk_widget_get_window(GTK_WIDGET(row)); GtkWidget *owner=NULL;
+    gdk_window_get_user_data(window,(gpointer *)&owner);
+    int x,y; gtk_widget_translate_coordinates(GTK_WIDGET(row),owner,20,gtk_widget_get_allocated_height(GTK_WIDGET(row))/2,&x,&y);
+    for (guint i=0;i<2;i++)
+    {
+        GdkEvent *event=gdk_event_new(i?GDK_BUTTON_RELEASE:GDK_BUTTON_PRESS);
+        event->button.window=g_object_ref(window); event->button.button=1; event->button.x=x; event->button.y=y;
+        event->button.state=i?GDK_BUTTON1_MASK:0;
+        gdk_event_set_device(event,gdk_seat_get_pointer(gdk_display_get_default_seat(gdk_window_get_display(window))));
+        gdk_event_put(event); gdk_event_free(event);
+    }
+}
+
 /* A reentrant timer continues through gtk_dialog_run's nested main loops. */
 static gboolean step(gpointer data)
 {
-    (void)data;
-    g_timeout_add(150,step,NULL);
+    g_timeout_add(150,step,data);
     if (++attempts>150) g_error("GTK smoke test timed out in phase %u",phase);
     if (!workspace)
     {
@@ -116,6 +133,37 @@ static gboolean step(gpointer data)
         if (!workspace) return FALSE;
     }
     GtkWidget *list=partition_list(workspace), *modal=dialog();
+    if (data)
+    {
+        if (!list) return FALSE;
+        if (phase==0)
+        {
+            GtkWidget *map=styled(workspace,"disk-map"); gboolean handled=FALSE;
+            GdkEventButton event={.type=GDK_2BUTTON_PRESS,.button=1,.x=gtk_widget_get_allocated_width(map)/2,.y=30};
+            phase=1; g_signal_emit_by_name(map,"button-press-event",&event,&handled); g_assert_true(handled);
+        }
+        else if (phase==1 || phase==3)
+        {
+            if (!modal) return FALSE;
+            g_assert_cmpstr(gtk_window_get_title(GTK_WINDOW(modal)),==,"New partition table");
+            int response=phase==3?GTK_RESPONSE_ACCEPT:GTK_RESPONSE_CANCEL;
+            phase++; gtk_dialog_response(GTK_DIALOG(modal),response);
+        }
+        else if (phase==2)
+        {
+            if (modal) return FALSE;
+            GtkListBoxRow *row=gtk_list_box_get_row_at_index(GTK_LIST_BOX(list),0);
+            phase=3; click_row(row); click_row(row);
+        }
+        else if (phase==4 && !modal)
+        {
+            g_assert_true(gtk_widget_is_sensitive(find(workspace,GTK_TYPE_BUTTON,"review")));
+            gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"undo")));
+            g_assert_false(gtk_widget_is_sensitive(find(workspace,GTK_TYPE_BUTTON,"review")));
+            gtk_main_quit();
+        }
+        return FALSE;
+    }
     if (phase==0)
     {
         if (!list) return FALSE;
@@ -243,6 +291,19 @@ static gboolean step(gpointer data)
     else if (phase==16)
     {
         if (modal) return FALSE;
+        stable_rows[0]=gtk_list_box_get_row_at_index(GTK_LIST_BOX(list),0); stable_rows[1]=gtk_list_box_get_row_at_index(GTK_LIST_BOX(list),1);
+        phase=30; clicks=1; click_row(stable_rows[1]);
+    }
+    else if (phase==30)
+    {
+        g_assert_true(gtk_list_box_get_selected_row(GTK_LIST_BOX(list))==stable_rows[clicks%2]);
+        g_assert_true(gtk_list_box_get_row_at_index(GTK_LIST_BOX(list),0)==stable_rows[0]);
+        g_assert_true(gtk_list_box_get_row_at_index(GTK_LIST_BOX(list),1)==stable_rows[1]);
+        if (++clicks<=20) click_row(stable_rows[clicks%2]);
+        else phase=31;
+    }
+    else if (phase==31)
+    {
         sidebar_width=gtk_widget_get_allocated_width(styled(workspace,"sidebar"));
         details_width=gtk_widget_get_allocated_width(styled(workspace,"details"));
         map_width=gtk_widget_get_allocated_width(styled(workspace,"disk-map"));
@@ -272,14 +333,16 @@ static gboolean step(gpointer data)
 /* The test owns a loop-backed fixture and verifies that GUI planning wrote nothing. */
 int main(int argc, char **argv)
 {
-    g_assert_cmpint(argc,==,2); g_assert_true(g_str_has_prefix(argv[1],"/dev/loop"));
+    gboolean empty_table=argc==3 && !strcmp(argv[1],"--empty-table");
+    g_assert_cmpint(argc,==,empty_table?3:2); const char *path=argv[argc-1];
+    g_assert_true(g_str_has_prefix(path,empty_table?"/tmp/":"/dev/loop"));
     GError *error=NULL; g_assert_true(engine_init(&error));
-    Disk *before=engine_read(argv[1],&error); g_assert_nonnull(before);
-    g_timeout_add(150,step,NULL);
-    char *args[]={argv[0],NULL}; ui_run(1,args,argv[1],FALSE,TRUE);
-    Disk *after=engine_read(argv[1],&error); g_assert_nonnull(after);
+    Disk *before=engine_read(path,&error); g_assert_nonnull(before);
+    g_timeout_add(150,step,GINT_TO_POINTER(empty_table));
+    char *args[]={argv[0],NULL}; ui_run(1,args,path,FALSE,TRUE);
+    Disk *after=engine_read(path,&error); g_assert_nonnull(after);
     g_assert_cmpstr(before->snapshot,==,after->snapshot);
     disk_free(before); disk_free(after);
-    g_print("PASS: native GTK selection, two-edge resize, movement, Review with explicit in-use acknowledgement, Adjust, Undo, current-size Grow, responsive window layout with fixed side panes, and no disk writes.\n");
+    g_print("PASS: native GTK selection and mouse releases, two-edge resize, movement, Review with explicit in-use acknowledgement, Adjust, Undo, current-size Grow, responsive window layout with fixed side panes, double-click table creation, and no disk writes.\n");
     return 0;
 }

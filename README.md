@@ -45,6 +45,7 @@ library dependencies derived by `dpkg-shlibdeps`.
 - Per-device icons distinguish USB, ordinary disks, RAID and virtual devices.
 - Undo changes to the plan, review the complete diff and explicitly apply it.
 - Check the partition table and export the exact proposed sfdisk script.
+- Double-click the disk map or a row to choose a new table when GPT/MBR is absent.
 
 The GTK CSS and Cairo geometry implement the native window frame, allocation
 map, aligned table columns, detail panel and draggable editor directly.

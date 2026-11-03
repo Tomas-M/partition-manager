@@ -30,3 +30,5 @@ mkdir "$WORK/mount"
 mount "$LOOP"p1 "$WORK/mount"
 make -C "$THIS" build/partition-manager-ui-test
 xvfb-run -a -s '-screen 0 1440x900x24' env G_DEBUG=fatal-criticals "$THIS/build/partition-manager-ui-test" "$LOOP"
+truncate -s 128M "$WORK/empty.img"
+xvfb-run -a -s '-screen 0 1440x900x24' env G_DEBUG=fatal-criticals "$THIS/build/partition-manager-ui-test" --empty-table "$WORK/empty.img"
