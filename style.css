@@ -1,6 +1,6 @@
 .partitions,.partitions-dialog { background:#fff; color:#25302d; font-family:"DejaVu Sans",sans-serif; font-size:14px; font-weight:400; }
 .partitions *,.partitions-dialog * { outline-offset:2px; transition:none; }
-.partitions decoration,.partitions-dialog decoration { border:1px solid #c5cbc3; border-radius:9px; box-shadow:0 12px 30px alpha(#25302d,.16); }
+.partitions decoration,.partitions-dialog decoration { border:1px solid #c5cbc3; border-radius:9px 9px 0 0; box-shadow:0 12px 30px alpha(#25302d,.16); }
 .partitions headerbar { min-height:51px; padding:0 14px 0 18px; background:linear-gradient(#f7f8f4,#ebeee6); border:0; border-bottom:1px solid #ced4cb; border-radius:8px 8px 0 0; box-shadow:none; }
 .partitions .app-title { font-size:16px; font-weight:500; }
 .partitions .title-center,.partitions .title-center label { color:#626c64; font-size:13px; }
@@ -58,7 +58,7 @@
 .partitions .detail-hint { color:#83907a; font-size:13px; }
 .partitions .detail-field { padding:9px 0; border-bottom:1px solid #e8ece3; }
 .partitions .detail-key { color:#8b9486; font-size:13px; }
-.partitions .footer { min-height:36px; padding:11px 19px; background:#f4f6f0; border-top:1px solid #d7ded1; border-radius:0 0 8px 8px; color:#7d8776; }
+.partitions .footer { min-height:36px; padding:11px 19px; background:#f4f6f0; border-top:1px solid #d7ded1; border-radius:0; color:#7d8776; }
 .partitions .pending-status { color:#7d8776; font-size:13px; }
 .partitions-dialog { background:#fbfcf8; }
 .partitions-dialog headerbar { min-height:52px; padding:0 22px; background:linear-gradient(#f8faf4,#eef2e8); border:0; border-bottom:1px solid #dce2d5; border-radius:8px 8px 0 0; box-shadow:none; }

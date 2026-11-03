@@ -60,9 +60,9 @@ gboolean command_run(const char *const *argv, const char *input, int fd, char **
 gboolean engine_init(GError **error);
 gboolean engine_new_table(Disk *disk, const char *label, GError **error);
 guint64 capacity_last(const Disk *disk);
-GPtrArray *engine_scan(const char *only, GError **error);
+GPtrArray *engine_scan(const char *only, gboolean include_loop, GError **error);
 Disk *engine_read(const char *path, GError **error);
 gboolean engine_apply(Disk *disk, const char *backup_root, GString *log, ApplyOptions *options, GError **error);
 gboolean engine_check(Disk *disk, char **output, GError **error);
 
-int ui_run(int argc, char **argv, const char *only, gboolean readonly);
+int ui_run(int argc, char **argv, const char *only, gboolean readonly, gboolean include_loop);

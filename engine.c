@@ -374,15 +374,24 @@ Disk *engine_read(const char *path, GError **error)
     return disk;
 }
 
+/* Compressed RAM is never a disk target; loop devices require an explicit option. */
+static gboolean visible_device(const char *path, const char *type, gboolean include_loop)
+{
+    if (g_str_has_prefix(path,"/dev/zram")) return FALSE;
+    return include_loop || strcmp(type,"loop");
+}
+
 /* Inventory includes usable virtual devices while retaining busy physical parents. */
-GPtrArray *engine_scan(const char *only, GError **error)
+GPtrArray *engine_scan(const char *only, gboolean include_loop, GError **error)
 {
     GPtrArray *disks=g_ptr_array_new_with_free_func(disk_free);
     if (only)
     {
         Disk *disk=engine_read(only, error);
         if (!disk) { g_ptr_array_unref(disks); return NULL; }
-        g_ptr_array_add(disks, disk); return disks;
+        if (visible_device(disk->path,disk->kind,include_loop)) g_ptr_array_add(disks,disk);
+        else disk_free(disk);
+        return disks;
     }
     JsonParser *parser=inventory(NULL, error);
     if (!parser) { g_ptr_array_unref(disks); return NULL; }
@@ -392,6 +401,7 @@ GPtrArray *engine_scan(const char *only, GError **error)
         JsonObject *entry=json_array_get_object_element(array, i);
         const char *type=js(entry, "type"), *path=js(entry, "path");
         if (!strcmp(type, "part") || !strcmp(type, "rom") || !jn(entry, "size")) continue;
+        if (!visible_device(path,type,include_loop)) continue;
         char *canonical=realpath(path, NULL);
         Disk *disk=canonical?engine_read(canonical, NULL):NULL;
         free(canonical);

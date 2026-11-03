@@ -11,10 +11,11 @@ int main(int argc, char **argv)
     setlocale(LC_ALL, "");
     g_set_prgname("partition-manager"); g_set_application_name("Partition Manager");
     g_setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", TRUE);
-    char *device=NULL; gboolean readonly=FALSE;
+    char *device=NULL; gboolean readonly=FALSE, include_loop=FALSE;
     GOptionEntry options[]={
         {"device", 0, 0, G_OPTION_ARG_FILENAME, &device, "Show only the specified device or disk image", "PATH"},
         {"read-only", 0, 0, G_OPTION_ARG_NONE, &readonly, "Allow planning but disable applying changes", NULL},
+        {"include-loop", 0, 0, G_OPTION_ARG_NONE, &include_loop, "Include loop devices in the device list", NULL},
         {NULL}
     };
     GOptionContext *context=g_option_context_new("— native partition manager");
@@ -28,6 +29,6 @@ int main(int argc, char **argv)
         if (!canonical) { g_printerr("Cannot resolve device: %s\n", device); g_free(device); return 1; }
         g_free(device); device=canonical;
     }
-    int status=ui_run(argc, argv, device, readonly || geteuid()!=0);
+    int status=ui_run(argc, argv, device, readonly || geteuid()!=0, include_loop);
     g_free(device); return status;
 }

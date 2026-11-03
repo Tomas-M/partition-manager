@@ -22,6 +22,10 @@ planning, but disables applying changes. `--read-only` explicitly selects
 this mode. `--device PATH` restricts the view to one device or regular disk
 image; image files support partition-table operations, while filesystem
 operations require a block device or a loop-backed image.
+Loop devices are hidden unless `--include-loop` is passed, including with
+`--device`. Compressed RAM (`zram`) devices are always hidden. An empty
+inventory displays “No disks were found.” Slax's launcher uses the default
+device filter.
 
 `make install` installs the executable, desktop entry, icon and icon license.
 `DESTDIR` and `PREFIX` are supported. Slax's desktop compile recipe builds

@@ -7,21 +7,21 @@
 typedef struct
 {
     GtkWidget *window, *sidebar, *heading, *subtitle, *notice, *map, *rows, *details;
-    GtkWidget *body, *status, *spinner, *undo, *review, *create, *edit, *grow, *format, *remove;
+    GtkWidget *body, *content, *status, *spinner, *undo, *review, *create, *edit, *grow, *format, *remove;
     GtkWidget *header_device, *header_icon, *allocated, *available, *row_scroll, *status_icon;
     GtkSizeGroup *size_group;
     GPtrArray *disks, *history;
     guint active;
     gint selected;
     guint64 free_start;
-    gboolean readonly, working;
+    gboolean readonly, working, include_loop;
     char *only;
 } App;
 typedef struct { guint disk; Disk *before; } Undo;
 typedef struct { guint64 start, size; gint number; } Item;
 typedef struct { Item item; double x, width; } Tile;
 typedef enum { SCAN, APPLY, CHECK } JobType;
-typedef struct { GPtrArray *plans; char *backup, *only; GString *log; JobType type; ApplyOptions options; } Job;
+typedef struct { GPtrArray *plans; char *backup, *only; GString *log; JobType type; ApplyOptions options; gboolean include_loop; } Job;
 typedef enum { CREATE, ADJUST, GROW, FORMAT, RENAME } EditMode;
 typedef struct
 {
@@ -74,10 +74,11 @@ static GtkWidget *image(const char *name, int size)
 static GtkWidget *button(App *app, const char *text, const char *icon, const char *command)
 {
     GtkWidget *widget=gtk_button_new(), *box=gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 7);
+    gtk_widget_set_halign(box,GTK_ALIGN_CENTER); gtk_widget_set_valign(box,GTK_ALIGN_CENTER);
     style(widget,"action-button");
     if (!text || !*text) style(widget,"icon-button");
     gtk_container_add(GTK_CONTAINER(widget), box);
-    if (icon) gtk_box_pack_start(GTK_BOX(box), image(icon, 15), FALSE, FALSE, 0);
+    if (icon) gtk_box_pack_start(GTK_BOX(box), image(icon, 16), FALSE, FALSE, 0);
     if (text && *text)
     {
         GtkWidget *caption=gtk_label_new(text);
@@ -916,7 +917,7 @@ static void worker(GTask *task, gpointer source, gpointer data, GCancellable *ca
             if (!engine_apply(job->plans->pdata[i],job->backup,job->log,&job->options,&error)) { g_task_return_error(task,error); return; }
         g_task_return_pointer(task,NULL,NULL); return;
     }
-    GPtrArray *result=engine_scan(job->only,&error);
+    GPtrArray *result=engine_scan(job->only,job->include_loop,&error);
     if (!result) g_task_return_error(task,error); else g_task_return_pointer(task,result,(GDestroyNotify)g_ptr_array_unref);
 }
 
@@ -925,7 +926,7 @@ static void job_done(GObject *source, GAsyncResult *result, gpointer data)
 {
     (void)source; App *app=data; GTask *task=G_TASK(result); Job *job=g_task_get_task_data(task); GError *error=NULL;
     GPtrArray *disks=g_task_propagate_pointer(task,&error);
-    app->working=FALSE; gtk_spinner_stop(GTK_SPINNER(app->spinner)); gtk_widget_set_sensitive(app->body,TRUE);
+    app->working=FALSE; gtk_spinner_stop(GTK_SPINNER(app->spinner)); gtk_widget_hide(app->spinner); gtk_widget_set_sensitive(app->body,TRUE);
     if (job->type==CHECK)
     {
         render(app); message(app,error?"Partition-table check failed":"Partition table checked",error?error->message:"sfdisk completed the partition-table check. Filesystems were not checked.",job->log->str); g_clear_error(&error); return;
@@ -942,15 +943,24 @@ static void job_done(GObject *source, GAsyncResult *result, gpointer data)
     if (error) { message(app,"Cannot read disks",error->message,NULL); gtk_label_set_text(GTK_LABEL(app->status),error->message); g_clear_error(&error); return; }
     g_ptr_array_unref(app->disks); app->disks=disks; g_ptr_array_set_size(app->history,0);
     app->active=0; app->selected=-1; app->free_start=0;
-    if (disks->len) render(app); else gtk_label_set_text(GTK_LABEL(app->status),"No accessible disks were found. Connect a disk and refresh.");
+    gtk_stack_set_visible_child_name(GTK_STACK(app->content),disks->len?"disk":"empty");
+    if (disks->len) render(app);
+    else
+    {
+        render_sidebar(app);
+        gtk_window_set_title(GTK_WINDOW(app->window),"Partition Manager");
+        gtk_label_set_text(GTK_LABEL(app->header_device),""); clear(app->header_icon); clear(app->status_icon);
+        gtk_label_set_text(GTK_LABEL(app->status),"No disks were found.");
+        gtk_widget_set_sensitive(app->undo,FALSE); gtk_widget_set_sensitive(app->review,FALSE);
+    }
 }
 
 /* Copy selected plans before disabling editing and starting the worker. */
 static void start_job(App *app, JobType type, gboolean allow_busy)
 {
     Job *job=g_new0(Job,1); job->plans=g_ptr_array_new_with_free_func(disk_free); job->log=g_string_new(NULL); job->only=g_strdup(app->only); job->type=type;
-    job->options.allow_busy=allow_busy;
-    job->backup=g_build_filename(g_get_user_state_dir(),"partitions","backups",NULL);
+    job->options.allow_busy=allow_busy; job->include_loop=app->include_loop;
+    job->backup=g_build_filename(g_get_user_state_dir(),"partition-manager","backups",NULL);
     if (type==APPLY)
         for (guint i=0; i<app->disks->len; i++) if (disk_changed(app->disks->pdata[i])) g_ptr_array_add(job->plans,disk_copy(app->disks->pdata[i]));
     if (type==CHECK) g_ptr_array_add(job->plans,disk_copy(app->disks->pdata[app->active]));
@@ -977,9 +987,9 @@ static gboolean close_window(GtkWidget *widget, GdkEvent *event, gpointer data)
 }
 
 /* Construct the approved single-window Workspace with native GTK3 controls. */
-int ui_run(int argc, char **argv, const char *only, gboolean readonly)
+int ui_run(int argc, char **argv, const char *only, gboolean readonly, gboolean include_loop)
 {
-    gtk_init(&argc,&argv); App app={.active=0,.selected=-1,.readonly=readonly,.only=g_strdup(only)};
+    gtk_init(&argc,&argv); App app={.active=0,.selected=-1,.readonly=readonly,.include_loop=include_loop,.only=g_strdup(only)};
     app.disks=g_ptr_array_new_with_free_func(disk_free); app.history=g_ptr_array_new_with_free_func(undo_free);
     GtkCssProvider *css=gtk_css_provider_new(); gtk_css_provider_load_from_resource(css,"/org/slax/partition-manager/style.css");
     gtk_style_context_add_provider_for_screen(gdk_screen_get_default(),GTK_STYLE_PROVIDER(css),GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); g_object_unref(css);
@@ -1008,7 +1018,9 @@ int ui_run(int argc, char **argv, const char *only, gboolean readonly)
     app.sidebar=gtk_list_box_new(); style(app.sidebar,"device-list"); gtk_list_box_set_selection_mode(GTK_LIST_BOX(app.sidebar),GTK_SELECTION_SINGLE); gtk_container_add(GTK_CONTAINER(side_scroll),app.sidebar); gtk_box_pack_start(GTK_BOX(sidebar),side_scroll,TRUE,TRUE,0);
     GtkWidget *footnote=label("Select a disk, then a partition or an unallocated area.","sidebar-footnote"); gtk_label_set_line_wrap(GTK_LABEL(footnote),TRUE); gtk_label_set_max_width_chars(GTK_LABEL(footnote),22); gtk_box_pack_start(GTK_BOX(sidebar),footnote,FALSE,FALSE,0);
     gtk_box_pack_start(GTK_BOX(app.body),sidebar,FALSE,FALSE,0);
-    GtkWidget *main_clip=gtk_scrolled_window_new(NULL,NULL); gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(main_clip),GTK_POLICY_NEVER,GTK_POLICY_EXTERNAL); gtk_box_pack_start(GTK_BOX(app.body),main_clip,TRUE,TRUE,0);
+    app.content=gtk_stack_new(); gtk_box_pack_start(GTK_BOX(app.body),app.content,TRUE,TRUE,0);
+    GtkWidget *empty=gtk_label_new("No disks were found."); style(empty,"muted"); gtk_stack_add_named(GTK_STACK(app.content),empty,"empty");
+    GtkWidget *main_clip=gtk_scrolled_window_new(NULL,NULL); gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(main_clip),GTK_POLICY_NEVER,GTK_POLICY_EXTERNAL); gtk_stack_add_named(GTK_STACK(app.content),main_clip,"disk");
     GtkWidget *main=gtk_box_new(GTK_ORIENTATION_VERTICAL,0); style(main,"disk-main"); gtk_container_add(GTK_CONTAINER(main_clip),main);
     GtkWidget *heading=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,20), *titles=gtk_box_new(GTK_ORIENTATION_VERTICAL,6); style(heading,"disk-heading");
     app.heading=label("Partition Manager","disk-title"); app.subtitle=label("Select a device to begin.","muted");
@@ -1025,7 +1037,7 @@ int ui_run(int argc, char **argv, const char *only, gboolean readonly)
     gtk_box_pack_start(GTK_BOX(main),toolbar,FALSE,FALSE,0);
     app.map=gtk_drawing_area_new(); style(app.map,"disk-map"); gtk_widget_set_size_request(app.map,-1,68); gtk_widget_add_events(app.map,GDK_BUTTON_PRESS_MASK); gtk_box_pack_start(GTK_BOX(main),app.map,FALSE,FALSE,0);
     GtkWidget *map_caption=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,15); style(map_caption,"map-caption"); app.allocated=label("",NULL); app.available=label("","free-count"); gtk_box_pack_start(GTK_BOX(map_caption),app.allocated,TRUE,TRUE,0); gtk_box_pack_end(GTK_BOX(map_caption),app.available,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(main),map_caption,FALSE,FALSE,0);
-    GtkWidget *editing=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,22), *column=gtk_box_new(GTK_ORIENTATION_VERTICAL,0); gtk_widget_set_valign(editing,GTK_ALIGN_START);
+    GtkWidget *editing=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,22), *column=gtk_box_new(GTK_ORIENTATION_VERTICAL,0);
     GtkWidget *table_header=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,12); style(table_header,"table-header");
     GtkWidget *name_header=label("Partition",NULL), *fs_header=label("Filesystem",NULL), *size_header=label("Size",NULL); gtk_label_set_xalign(GTK_LABEL(size_header),1); gtk_widget_set_size_request(size_header,85,-1);
     gtk_size_group_add_widget(app.size_group,size_header);

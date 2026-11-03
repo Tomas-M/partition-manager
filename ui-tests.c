@@ -30,6 +30,19 @@ static GtkWidget *find(GtkWidget *root, GType type, const char *action)
     g_list_free(children); return result;
 }
 
+/* Icon-only controls keep their content centered at every window size. */
+static void assert_icon_alignment(void)
+{
+    const char *actions[]={"info","save","delete"};
+    for (guint i=0;i<G_N_ELEMENTS(actions);i++)
+    {
+        GtkWidget *button=find(workspace,GTK_TYPE_BUTTON,actions[i]), *content=gtk_bin_get_child(GTK_BIN(button));
+        int x,y; gtk_widget_translate_coordinates(content,button,0,0,&x,&y);
+        g_assert_cmpint(abs(2*x+gtk_widget_get_allocated_width(content)-gtk_widget_get_allocated_width(button)),<=,1);
+        g_assert_cmpint(abs(2*y+gtk_widget_get_allocated_height(content)-gtk_widget_get_allocated_height(button)),<=,1);
+    }
+}
+
 /* Find the partition list by its model-backed rows, independent of coordinates. */
 static GtkWidget *partition_list(GtkWidget *root)
 {
@@ -106,6 +119,7 @@ static gboolean step(gpointer data)
     if (phase==0)
     {
         if (!list) return FALSE;
+        assert_icon_alignment();
         g_assert_null(modal); capture(workspace,"/tmp/partitions-native-workspace.png");
         gtk_list_box_select_row(GTK_LIST_BOX(list),gtk_list_box_get_row_at_index(GTK_LIST_BOX(list),1));
         GtkWidget *create=find(workspace,GTK_TYPE_BUTTON,"create"); g_assert_true(gtk_widget_is_sensitive(create));
@@ -249,6 +263,7 @@ static gboolean step(gpointer data)
     else if (phase==19)
     {
         if (gtk_widget_get_allocated_width(styled(workspace,"disk-map"))!=map_width) return FALSE;
+        assert_icon_alignment();
         gtk_main_quit(); return FALSE;
     }
     return FALSE;
@@ -261,7 +276,7 @@ int main(int argc, char **argv)
     GError *error=NULL; g_assert_true(engine_init(&error));
     Disk *before=engine_read(argv[1],&error); g_assert_nonnull(before);
     g_timeout_add(150,step,NULL);
-    char *args[]={argv[0],NULL}; ui_run(1,args,argv[1],FALSE);
+    char *args[]={argv[0],NULL}; ui_run(1,args,argv[1],FALSE,TRUE);
     Disk *after=engine_read(argv[1],&error); g_assert_nonnull(after);
     g_assert_cmpstr(before->snapshot,==,after->snapshot);
     disk_free(before); disk_free(after);

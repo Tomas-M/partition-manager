@@ -168,6 +168,11 @@ static int integration(const char *path)
     g_free(sys); g_free(backing);
     GError *error=NULL; g_assert_true(engine_init(&error));
     Disk *disk=engine_read(path,&error); if (!disk) g_error("%s",error->message);
+    GPtrArray *hidden=engine_scan(path,FALSE,&error), *visible=engine_scan(path,TRUE,&error);
+    g_assert_nonnull(hidden); g_assert_cmpuint(hidden->len,==,0);
+    g_assert_nonnull(visible); g_assert_cmpuint(visible->len,==,1);
+    g_assert_cmpstr(((Disk *)visible->pdata[0])->path,==,path);
+    g_ptr_array_unref(hidden); g_ptr_array_unref(visible);
     g_assert_true(engine_new_table(disk,"gpt",&error));
     add_partition(disk,1,1,128,"ext4"); add_partition(disk,2,257,512,"vfat");
     add_partition(disk,3,800,320,"xfs"); add_partition(disk,4,1200,256,"btrfs");
