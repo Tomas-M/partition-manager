@@ -102,7 +102,7 @@ static GtkWidget *table_columns(GtkWidget *name, GtkWidget *filesystem)
 {
     GtkWidget *grid=gtk_grid_new(); gtk_grid_set_column_homogeneous(GTK_GRID(grid),TRUE);
     gtk_widget_set_hexpand(grid,TRUE); gtk_widget_set_margin_end(name,12);
-    gtk_grid_attach(GTK_GRID(grid),name,0,0,5,1); gtk_grid_attach(GTK_GRID(grid),filesystem,5,0,4,1);
+    gtk_grid_attach(GTK_GRID(grid),name,0,0,4,1); gtk_grid_attach(GTK_GRID(grid),filesystem,4,0,1,1);
     return grid;
 }
 
@@ -1065,12 +1065,12 @@ int ui_run(int argc, char **argv, const char *only, gboolean readonly, gboolean 
     GtkWidget *editing=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,22), *column=gtk_box_new(GTK_ORIENTATION_VERTICAL,0);
     GtkWidget *table_header=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,12); style(table_header,"table-header");
     GtkWidget *name_header=label("Partition",NULL), *fs_header=label("Filesystem",NULL), *size_header=label("Size",NULL); gtk_label_set_xalign(GTK_LABEL(size_header),1); gtk_widget_set_size_request(size_header,85,-1);
-    gtk_size_group_add_widget(app.size_group,size_header);
+    ellipsize(fs_header); gtk_size_group_add_widget(app.size_group,size_header);
     gtk_box_pack_start(GTK_BOX(table_header),table_columns(name_header,fs_header),TRUE,TRUE,0); gtk_box_pack_start(GTK_BOX(table_header),size_header,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(column),table_header,FALSE,FALSE,0);
     app.row_scroll=gtk_scrolled_window_new(NULL,NULL); gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(app.row_scroll),TRUE); gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(app.row_scroll),342);
     app.rows=gtk_list_box_new(); style(app.rows,"partition-list"); gtk_list_box_set_selection_mode(GTK_LIST_BOX(app.rows),GTK_SELECTION_SINGLE); gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(app.rows),FALSE); gtk_container_add(GTK_CONTAINER(app.row_scroll),app.rows);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(app.row_scroll),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC); gtk_box_pack_start(GTK_BOX(column),app.row_scroll,TRUE,TRUE,0); gtk_box_pack_start(GTK_BOX(editing),column,TRUE,TRUE,0);
-    GtkWidget *details_clip=gtk_scrolled_window_new(NULL,NULL); gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(details_clip),GTK_POLICY_NEVER,GTK_POLICY_EXTERNAL);
+    GtkWidget *details_clip=gtk_scrolled_window_new(NULL,NULL); gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(details_clip),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC); gtk_scrolled_window_set_overlay_scrolling(GTK_SCROLLED_WINDOW(details_clip),TRUE);
     app.details=gtk_box_new(GTK_ORIENTATION_VERTICAL,0); style(app.details,"details"); gtk_widget_set_size_request(app.details,238,-1); gtk_container_add(GTK_CONTAINER(details_clip),app.details); gtk_box_pack_start(GTK_BOX(editing),details_clip,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(main),editing,TRUE,TRUE,0);
     GtkWidget *footer=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,9); style(footer,"footer");
     app.status_icon=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,0); gtk_box_pack_start(GTK_BOX(footer),app.status_icon,FALSE,FALSE,0);

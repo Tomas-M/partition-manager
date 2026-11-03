@@ -320,6 +320,15 @@ static gboolean step(gpointer data)
         GtkWidget *scroll=gtk_widget_get_ancestor(list,GTK_TYPE_SCROLLED_WINDOW);
         GtkAdjustment *vertical=gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll));
         g_assert_cmpfloat(gtk_adjustment_get_upper(vertical),>,gtk_adjustment_get_page_size(vertical));
+        GtkWidget *columns=find(styled(workspace,"table-header"),GTK_TYPE_GRID,NULL);
+        GtkWidget *name=gtk_grid_get_child_at(GTK_GRID(columns),0,0), *filesystem=gtk_grid_get_child_at(GTK_GRID(columns),4,0);
+        g_assert_cmpint(gtk_widget_get_allocated_width(filesystem)*2,<,gtk_widget_get_allocated_width(name));
+        GtkWidget *details_scroll=gtk_widget_get_ancestor(styled(workspace,"details"),GTK_TYPE_SCROLLED_WINDOW);
+        g_assert_true(gtk_scrolled_window_get_overlay_scrolling(GTK_SCROLLED_WINDOW(details_scroll)));
+        GtkAdjustment *properties=gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(details_scroll));
+        g_assert_cmpfloat(gtk_adjustment_get_upper(properties),>,gtk_adjustment_get_page_size(properties));
+        gtk_adjustment_set_value(properties,gtk_adjustment_get_upper(properties)-gtk_adjustment_get_page_size(properties));
+        g_assert_cmpfloat(gtk_adjustment_get_value(properties),>,0);
         capture(workspace,phase==17?"/tmp/partition-manager-900x480.png":"/tmp/partition-manager-820x360.png");
         if (phase==17) { gtk_window_resize(GTK_WINDOW(workspace),820,360); phase=18; }
         else { gtk_window_resize(GTK_WINDOW(workspace),1254,700); phase=19; }
