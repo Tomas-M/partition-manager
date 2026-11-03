@@ -4,6 +4,17 @@
 
 static guint phase, attempts;
 static GtkWidget *workspace;
+static int sidebar_width, details_width, map_width;
+
+/* Find semantic layout elements without depending on window coordinates. */
+static GtkWidget *styled(GtkWidget *root, const char *name)
+{
+    if (gtk_style_context_has_class(gtk_widget_get_style_context(root),name)) return root;
+    if (!GTK_IS_CONTAINER(root)) return NULL;
+    GList *children=gtk_container_get_children(GTK_CONTAINER(root)); GtkWidget *result=NULL;
+    for (GList *item=children; item && !result; item=item->next) result=styled(item->data,name);
+    g_list_free(children); return result;
+}
 
 /* Inspect only this process's native widget tree, never the user's desktop. */
 static GtkWidget *find(GtkWidget *root, GType type, const char *action)
@@ -218,6 +229,26 @@ static gboolean step(gpointer data)
     else if (phase==16)
     {
         if (modal) return FALSE;
+        sidebar_width=gtk_widget_get_allocated_width(styled(workspace,"sidebar"));
+        details_width=gtk_widget_get_allocated_width(styled(workspace,"details"));
+        map_width=gtk_widget_get_allocated_width(styled(workspace,"disk-map"));
+        gtk_window_resize(GTK_WINDOW(workspace),900,480); phase=17;
+    }
+    else if (phase==17 || phase==18)
+    {
+        int width,height; gtk_window_get_size(GTK_WINDOW(workspace),&width,&height);
+        int requested_width=phase==17?900:820, requested_height=phase==17?480:360;
+        if (width!=requested_width || height!=requested_height) return FALSE;
+        g_assert_cmpint(gtk_widget_get_allocated_width(styled(workspace,"sidebar")),==,sidebar_width);
+        g_assert_cmpint(gtk_widget_get_allocated_width(styled(workspace,"details")),==,details_width);
+        g_assert_cmpint(gtk_widget_get_allocated_width(styled(workspace,"disk-map")),<,map_width);
+        capture(workspace,phase==17?"/tmp/partition-manager-900x480.png":"/tmp/partition-manager-820x360.png");
+        if (phase==17) { gtk_window_resize(GTK_WINDOW(workspace),820,360); phase=18; }
+        else { gtk_window_resize(GTK_WINDOW(workspace),1254,700); phase=19; }
+    }
+    else if (phase==19)
+    {
+        if (gtk_widget_get_allocated_width(styled(workspace,"disk-map"))!=map_width) return FALSE;
         gtk_main_quit(); return FALSE;
     }
     return FALSE;
@@ -234,6 +265,6 @@ int main(int argc, char **argv)
     Disk *after=engine_read(argv[1],&error); g_assert_nonnull(after);
     g_assert_cmpstr(before->snapshot,==,after->snapshot);
     disk_free(before); disk_free(after);
-    g_print("PASS: native GTK selection, two-edge resize, movement, Review with explicit in-use acknowledgement, Adjust, Undo, current-size Grow, and no disk writes.\n");
+    g_print("PASS: native GTK selection, two-edge resize, movement, Review with explicit in-use acknowledgement, Adjust, Undo, current-size Grow, responsive window layout with fixed side panes, and no disk writes.\n");
     return 0;
 }

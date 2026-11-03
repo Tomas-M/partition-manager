@@ -45,6 +45,9 @@ library dependencies derived by `dpkg-shlibdeps`.
 The GTK CSS and Cairo geometry implement the native window frame, allocation
 map, aligned table columns, detail panel and draggable editor directly.
 There is one Workspace rather than multiple design variants.
+The window resizes in both directions. The device sidebar and detail pane
+keep their widths while the disk map and table columns adapt; short windows
+clip the details and scroll the device list.
 
 | Filesystem | Create | Grow |
 |---|---|---|

@@ -8,8 +8,8 @@ typedef struct
 {
     GtkWidget *window, *sidebar, *heading, *subtitle, *notice, *map, *rows, *details;
     GtkWidget *body, *status, *spinner, *undo, *review, *create, *edit, *grow, *format, *remove;
-    GtkWidget *header_device, *header_icon, *allocated, *available, *row_scroll, *name_header, *fs_header, *status_icon;
-    GtkSizeGroup *name_group, *fs_group, *size_group;
+    GtkWidget *header_device, *header_icon, *allocated, *available, *row_scroll, *status_icon;
+    GtkSizeGroup *size_group;
     GPtrArray *disks, *history;
     guint active;
     gint selected;
@@ -95,12 +95,13 @@ static void ellipsize(GtkWidget *widget)
     gtk_label_set_width_chars(GTK_LABEL(widget),1); gtk_label_set_max_width_chars(GTK_LABEL(widget),1);
 }
 
-/* Match the mockup's 1.25 : 1 : 85px columns in both the header and every row. */
-static void columns_allocate(GtkWidget *widget, GtkAllocation *allocation, gpointer data)
+/* Share proportional columns without turning their current allocation into a minimum width. */
+static GtkWidget *table_columns(GtkWidget *name, GtkWidget *filesystem)
 {
-    (void)widget; App *app=data; int available=MAX(240,allocation->width-24-24-85);
-    gtk_widget_set_size_request(app->name_header,available*1.25/2.25,-1);
-    gtk_widget_set_size_request(app->fs_header,available/2.25,-1);
+    GtkWidget *grid=gtk_grid_new(); gtk_grid_set_column_homogeneous(GTK_GRID(grid),TRUE);
+    gtk_widget_set_hexpand(grid,TRUE); gtk_widget_set_margin_end(name,12);
+    gtk_grid_attach(GTK_GRID(grid),name,0,0,5,1); gtk_grid_attach(GTK_GRID(grid),filesystem,5,0,4,1);
+    return grid;
 }
 
 /* Use one native CSD header and footer treatment for the mockup's focused dialogs. */
@@ -472,9 +473,8 @@ static void render(App *app)
         char *color=entry?g_strdup_printf("color%u",(MAX(1,entry->number)-1)%4):g_strdup("free-dot"); style(dot,color); g_free(color);
         gtk_widget_set_size_request(dot,10,10); gtk_widget_set_valign(dot,GTK_ALIGN_CENTER);
         gtk_box_pack_start(GTK_BOX(name_cell),dot,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(name_cell),text,TRUE,TRUE,0);
-        gtk_size_group_add_widget(app->name_group,name_cell); gtk_box_pack_start(GTK_BOX(box),name_cell,FALSE,FALSE,0);
-        GtkWidget *fs=label(entry?fs_name(entry):item.number==-2?"Needs repair":"Unpartitioned","row-type"); ellipsize(fs); gtk_size_group_add_widget(app->fs_group,fs);
-        gtk_box_pack_start(GTK_BOX(box),fs,FALSE,FALSE,0);
+        GtkWidget *fs=label(entry?fs_name(entry):item.number==-2?"Needs repair":"Unpartitioned","row-type"); ellipsize(fs);
+        gtk_box_pack_start(GTK_BOX(box),table_columns(name_cell,fs),TRUE,TRUE,0);
         char *capacity=format_size(item.size*disk->sector);
         GtkWidget *capacity_label=label(capacity,"row-size"); gtk_size_group_add_widget(app->size_group,capacity_label); gtk_label_set_xalign(GTK_LABEL(capacity_label),1);
         gtk_box_pack_start(GTK_BOX(box),capacity_label,FALSE,FALSE,0); gtk_container_add(GTK_CONTAINER(row),box);
@@ -987,7 +987,7 @@ int ui_run(int argc, char **argv, const char *only, gboolean readonly)
     gtk_window_set_title(GTK_WINDOW(app.window),"Partition Manager"); gtk_window_set_default_size(GTK_WINDOW(app.window),1254,585); gtk_window_set_position(GTK_WINDOW(app.window),GTK_WIN_POS_CENTER);
     GdkPixbuf *mark=gdk_pixbuf_new_from_resource_at_scale("/org/slax/partition-manager/app-icon.png",128,128,TRUE,NULL);
     gtk_window_set_default_icon(mark); g_clear_object(&mark); style(app.window,"partitions");
-    app.name_group=gtk_size_group_new(GTK_SIZE_GROUP_HORIZONTAL); app.fs_group=gtk_size_group_new(GTK_SIZE_GROUP_HORIZONTAL); app.size_group=gtk_size_group_new(GTK_SIZE_GROUP_HORIZONTAL);
+    app.size_group=gtk_size_group_new(GTK_SIZE_GROUP_HORIZONTAL);
     GtkWidget *header=gtk_header_bar_new(); gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(header),TRUE); gtk_header_bar_set_decoration_layout(GTK_HEADER_BAR(header),":minimize,maximize,close");
     GtkWidget *brand=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,10);
     GdkPixbuf *brand_icon=gdk_pixbuf_new_from_resource_at_scale("/org/slax/partition-manager/app-icon.png",30,30,TRUE,NULL);
@@ -998,17 +998,18 @@ int ui_run(int argc, char **argv, const char *only, gboolean readonly)
     gtk_box_pack_start(GTK_BOX(header_device),app.header_icon,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(header_device),app.header_device,FALSE,FALSE,0);
     gtk_header_bar_set_custom_title(GTK_HEADER_BAR(header),header_device); gtk_window_set_titlebar(GTK_WINDOW(app.window),header);
     GtkWidget *outer=gtk_box_new(GTK_ORIENTATION_VERTICAL,0); gtk_container_add(GTK_CONTAINER(app.window),outer);
-    app.body=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,0); gtk_widget_set_size_request(app.body,-1,526); gtk_box_pack_start(GTK_BOX(outer),app.body,TRUE,TRUE,0);
-    GtkWidget *side_scroll=gtk_scrolled_window_new(NULL,NULL); style(side_scroll,"sidebar"); gtk_widget_set_size_request(side_scroll,206,-1); gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(side_scroll),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
-    GtkWidget *sidebar=gtk_box_new(GTK_ORIENTATION_VERTICAL,0); style(sidebar,"sidebar-inner"); gtk_widget_set_valign(sidebar,GTK_ALIGN_START); gtk_container_add(GTK_CONTAINER(side_scroll),sidebar);
+    app.body=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,0); gtk_box_pack_start(GTK_BOX(outer),app.body,TRUE,TRUE,0);
+    GtkWidget *sidebar=gtk_box_new(GTK_ORIENTATION_VERTICAL,0); style(sidebar,"sidebar"); style(sidebar,"sidebar-inner"); gtk_widget_set_size_request(sidebar,206,-1);
     GtkWidget *side_heading=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,8); style(side_heading,"sidebar-label");
     gtk_box_pack_start(GTK_BOX(side_heading),label("DEVICES",NULL),TRUE,TRUE,0);
     GtkWidget *refresh=button(&app,NULL,"hard-drive","refresh"); style(refresh,"link-button"); gtk_widget_set_tooltip_text(refresh,"Refresh devices"); gtk_box_pack_end(GTK_BOX(side_heading),refresh,FALSE,FALSE,0);
     gtk_box_pack_start(GTK_BOX(sidebar),side_heading,FALSE,FALSE,0);
-    app.sidebar=gtk_list_box_new(); style(app.sidebar,"device-list"); gtk_list_box_set_selection_mode(GTK_LIST_BOX(app.sidebar),GTK_SELECTION_SINGLE); gtk_box_pack_start(GTK_BOX(sidebar),app.sidebar,FALSE,FALSE,0);
+    GtkWidget *side_scroll=gtk_scrolled_window_new(NULL,NULL); gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(side_scroll),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+    app.sidebar=gtk_list_box_new(); style(app.sidebar,"device-list"); gtk_list_box_set_selection_mode(GTK_LIST_BOX(app.sidebar),GTK_SELECTION_SINGLE); gtk_container_add(GTK_CONTAINER(side_scroll),app.sidebar); gtk_box_pack_start(GTK_BOX(sidebar),side_scroll,TRUE,TRUE,0);
     GtkWidget *footnote=label("Select a disk, then a partition or an unallocated area.","sidebar-footnote"); gtk_label_set_line_wrap(GTK_LABEL(footnote),TRUE); gtk_label_set_max_width_chars(GTK_LABEL(footnote),22); gtk_box_pack_start(GTK_BOX(sidebar),footnote,FALSE,FALSE,0);
-    gtk_box_pack_start(GTK_BOX(app.body),side_scroll,FALSE,FALSE,0);
-    GtkWidget *main=gtk_box_new(GTK_ORIENTATION_VERTICAL,0); style(main,"disk-main"); gtk_box_pack_start(GTK_BOX(app.body),main,TRUE,TRUE,0);
+    gtk_box_pack_start(GTK_BOX(app.body),sidebar,FALSE,FALSE,0);
+    GtkWidget *main_clip=gtk_scrolled_window_new(NULL,NULL); gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(main_clip),GTK_POLICY_NEVER,GTK_POLICY_EXTERNAL); gtk_box_pack_start(GTK_BOX(app.body),main_clip,TRUE,TRUE,0);
+    GtkWidget *main=gtk_box_new(GTK_ORIENTATION_VERTICAL,0); style(main,"disk-main"); gtk_container_add(GTK_CONTAINER(main_clip),main);
     GtkWidget *heading=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,20), *titles=gtk_box_new(GTK_ORIENTATION_VERTICAL,6); style(heading,"disk-heading");
     app.heading=label("Partition Manager","disk-title"); app.subtitle=label("Select a device to begin.","muted");
     ellipsize(app.heading);
@@ -1022,18 +1023,18 @@ int ui_run(int argc, char **argv, const char *only, gboolean readonly)
     GtkWidget *divider=gtk_separator_new(GTK_ORIENTATION_VERTICAL); style(divider,"toolbar-divider"); gtk_box_pack_start(GTK_BOX(toolbar),divider,FALSE,FALSE,5);
     gtk_box_pack_start(GTK_BOX(toolbar),app.remove,FALSE,FALSE,0); GtkWidget *new_table=button(&app,"New table…",NULL,"new-table"); style(new_table,"link-button"); gtk_box_pack_end(GTK_BOX(toolbar),new_table,FALSE,FALSE,0);
     gtk_box_pack_start(GTK_BOX(main),toolbar,FALSE,FALSE,0);
-    app.map=gtk_drawing_area_new(); gtk_widget_set_size_request(app.map,-1,68); gtk_widget_add_events(app.map,GDK_BUTTON_PRESS_MASK); gtk_box_pack_start(GTK_BOX(main),app.map,FALSE,FALSE,0);
+    app.map=gtk_drawing_area_new(); style(app.map,"disk-map"); gtk_widget_set_size_request(app.map,-1,68); gtk_widget_add_events(app.map,GDK_BUTTON_PRESS_MASK); gtk_box_pack_start(GTK_BOX(main),app.map,FALSE,FALSE,0);
     GtkWidget *map_caption=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,15); style(map_caption,"map-caption"); app.allocated=label("",NULL); app.available=label("","free-count"); gtk_box_pack_start(GTK_BOX(map_caption),app.allocated,TRUE,TRUE,0); gtk_box_pack_end(GTK_BOX(map_caption),app.available,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(main),map_caption,FALSE,FALSE,0);
     GtkWidget *editing=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,22), *column=gtk_box_new(GTK_ORIENTATION_VERTICAL,0); gtk_widget_set_valign(editing,GTK_ALIGN_START);
     GtkWidget *table_header=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,12); style(table_header,"table-header");
-    app.name_header=label("Partition",NULL); app.fs_header=label("Filesystem",NULL); GtkWidget *size_header=label("Size",NULL); gtk_label_set_xalign(GTK_LABEL(size_header),1); gtk_widget_set_size_request(size_header,85,-1);
-    gtk_size_group_add_widget(app.name_group,app.name_header); gtk_size_group_add_widget(app.fs_group,app.fs_header); gtk_size_group_add_widget(app.size_group,size_header);
-    gtk_box_pack_start(GTK_BOX(table_header),app.name_header,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(table_header),app.fs_header,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(table_header),size_header,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(column),table_header,FALSE,FALSE,0);
+    GtkWidget *name_header=label("Partition",NULL), *fs_header=label("Filesystem",NULL), *size_header=label("Size",NULL); gtk_label_set_xalign(GTK_LABEL(size_header),1); gtk_widget_set_size_request(size_header,85,-1);
+    gtk_size_group_add_widget(app.size_group,size_header);
+    gtk_box_pack_start(GTK_BOX(table_header),table_columns(name_header,fs_header),TRUE,TRUE,0); gtk_box_pack_start(GTK_BOX(table_header),size_header,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(column),table_header,FALSE,FALSE,0);
     app.row_scroll=gtk_scrolled_window_new(NULL,NULL); gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(app.row_scroll),TRUE); gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(app.row_scroll),342);
     app.rows=gtk_list_box_new(); style(app.rows,"partition-list"); gtk_list_box_set_selection_mode(GTK_LIST_BOX(app.rows),GTK_SELECTION_SINGLE); gtk_container_add(GTK_CONTAINER(app.row_scroll),app.rows);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(app.row_scroll),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC); gtk_box_pack_start(GTK_BOX(column),app.row_scroll,TRUE,TRUE,0); gtk_box_pack_start(GTK_BOX(editing),column,TRUE,TRUE,0);
-    app.details=gtk_box_new(GTK_ORIENTATION_VERTICAL,0); style(app.details,"details"); gtk_widget_set_size_request(app.details,238,-1); gtk_box_pack_start(GTK_BOX(editing),app.details,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(main),editing,TRUE,TRUE,0);
-    g_signal_connect(column,"size-allocate",G_CALLBACK(columns_allocate),&app);
+    GtkWidget *details_clip=gtk_scrolled_window_new(NULL,NULL); gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(details_clip),GTK_POLICY_NEVER,GTK_POLICY_EXTERNAL);
+    app.details=gtk_box_new(GTK_ORIENTATION_VERTICAL,0); style(app.details,"details"); gtk_widget_set_size_request(app.details,238,-1); gtk_container_add(GTK_CONTAINER(details_clip),app.details); gtk_box_pack_start(GTK_BOX(editing),details_clip,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(main),editing,TRUE,TRUE,0);
     GtkWidget *footer=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,9); style(footer,"footer");
     app.status_icon=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,0); gtk_box_pack_start(GTK_BOX(footer),app.status_icon,FALSE,FALSE,0);
     app.spinner=gtk_spinner_new(); gtk_widget_set_size_request(app.spinner,17,17); gtk_box_pack_start(GTK_BOX(footer),app.spinner,FALSE,FALSE,0); app.status=label("Reading disks…","pending-status"); gtk_label_set_ellipsize(GTK_LABEL(app.status),PANGO_ELLIPSIZE_END); gtk_box_pack_start(GTK_BOX(footer),app.status,TRUE,TRUE,0);
@@ -1042,5 +1043,5 @@ int ui_run(int argc, char **argv, const char *only, gboolean readonly)
     g_signal_connect(app.sidebar,"row-selected",G_CALLBACK(disk_selected),&app); g_signal_connect(app.rows,"row-selected",G_CALLBACK(row_selected),&app);
     g_signal_connect(app.map,"draw",G_CALLBACK(map_draw),&app); g_signal_connect(app.map,"button-press-event",G_CALLBACK(map_press),&app); g_signal_connect(app.window,"delete-event",G_CALLBACK(close_window),&app);
     gtk_widget_show_all(app.window); start_job(&app,SCAN,FALSE); gtk_main();
-    g_ptr_array_unref(app.disks); g_ptr_array_unref(app.history); g_object_unref(app.name_group); g_object_unref(app.fs_group); g_object_unref(app.size_group); g_free(app.only); return 0;
+    g_ptr_array_unref(app.disks); g_ptr_array_unref(app.history); g_object_unref(app.size_group); g_free(app.only); return 0;
 }
