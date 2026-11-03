@@ -1,0 +1,20 @@
+<gresources>
+  <gresource prefix="/org/slax/partition-manager">
+    <file>style.css</file>
+    <file>app-icon.png</file>
+    <file>icons/hard-drive.svg</file>
+    <file>icons/server.svg</file>
+    <file>icons/layer-group.svg</file>
+    <file>icons/plus.svg</file>
+    <file>icons/pen-to-square.svg</file>
+    <file>icons/trash-can.svg</file>
+    <file>icons/arrow-rotate-left.svg</file>
+    <file>icons/check.svg</file>
+    <file>icons/circle-info.svg</file>
+    <file>icons/floppy-disk.svg</file>
+    <file>icons/up-right-and-down-left-from-center.svg</file>
+    <file>icons/eraser.svg</file>
+    <file>icons/triangle-exclamation.svg</file>
+    <file>icons/usb.svg</file>
+  </gresource>
+</gresources>

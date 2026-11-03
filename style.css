@@ -1,0 +1,85 @@
+.partitions,.partitions-dialog { background:#fff; color:#25302d; font-family:"DejaVu Sans",sans-serif; font-size:14px; font-weight:400; }
+.partitions *,.partitions-dialog * { outline-offset:2px; transition:none; }
+.partitions decoration,.partitions-dialog decoration { border:1px solid #c5cbc3; border-radius:9px; box-shadow:0 12px 30px alpha(#25302d,.16); }
+.partitions headerbar { min-height:51px; padding:0 14px 0 18px; background:linear-gradient(#f7f8f4,#ebeee6); border:0; border-bottom:1px solid #ced4cb; border-radius:8px 8px 0 0; box-shadow:none; }
+.partitions .app-title { font-size:16px; font-weight:500; }
+.partitions .title-center,.partitions .title-center label { color:#626c64; font-size:13px; }
+.partitions .title-center drawingarea { color:#7c8a74; }
+.partitions headerbar button.titlebutton,.partitions-dialog headerbar button.titlebutton { min-width:27px; min-height:27px; margin:0 1px; padding:0; border:0; border-radius:0; background:none; box-shadow:none; color:#727b72; }
+.partitions headerbar button.titlebutton.close,.partitions-dialog headerbar button.titlebutton.close { border-radius:50%; background:#e0e4da; margin-left:6px; }
+.partitions button,.partitions-dialog button { min-height:0; min-width:0; padding:6px 12px; border:1px solid #cdd4c9; border-radius:5px; background:linear-gradient(#fff,#f4f6f1); box-shadow:0 1px 1px alpha(#223020,.02); color:#25302d; font-size:14px; font-weight:400; text-shadow:none; -gtk-icon-shadow:none; }
+.partitions button:hover,.partitions-dialog button:hover { background:#edf1e8; border-color:#b4c0af; }
+.partitions button:disabled,.partitions-dialog button:disabled { opacity:.4; color:#78817c; }
+.partitions button.suggested-action,.partitions-dialog button.suggested-action { background:#347e56; border-color:#2b704b; color:#fff; box-shadow:inset 0 1px alpha(#fff,.08); }
+.partitions button.suggested-action:hover,.partitions-dialog button.suggested-action:hover { background:#286b46; }
+.partitions button.icon-button { padding:6px; min-width:19px; }
+.partitions button.link-button,.partitions-dialog button.link-button { min-height:0; padding:5px 0; border:0; border-radius:0; background:none; box-shadow:none; color:#277652; }
+.partitions button:focus,.partitions-dialog button:focus { outline:2px solid #5b9c78; }
+.partitions .sidebar { background:#f3f5ef; border:0; border-right:1px solid #dce1dc; }
+.partitions .sidebar viewport { background:#f3f5ef; }
+.partitions .sidebar-inner { padding:22px 10px 16px; }
+.partitions .sidebar-label { margin:0 10px 14px; color:#7b8478; font-size:13px; font-weight:500; }
+.partitions .sidebar-label .link-button { padding:0; color:#7b8478; }
+.partitions .device-list { background:transparent; }
+.partitions .device-row { padding:13px 11px; margin-bottom:5px; border:1px solid transparent; border-radius:5px; background:transparent; }
+.partitions .device-row:hover { background:alpha(#fff,.6); }
+.partitions .device-row:selected { background:#fff; border-color:#d8e2d6; color:#25302d; box-shadow:0 1px 2px alpha(#283129,.03); }
+.partitions .device-symbol { color:#85917d; }
+.partitions .device-row:selected .device-symbol { color:#277652; }
+.partitions .device-name { font-size:14px; font-weight:500; }
+.partitions .device-subtitle { font-size:13px; color:#84907e; }
+.partitions .sidebar-footnote { margin:24px 11px 0; padding-top:18px; border-top:1px solid #dce2d6; color:#8b9387; font-size:13px; }
+.partitions .disk-main { padding:24px 26px 22px; }
+.partitions .disk-heading { margin-bottom:18px; }
+.partitions .disk-title { font-size:24px; font-weight:500; }
+.partitions .muted { font-size:13px; color:#78817c; }
+.partitions .toolbar { margin-bottom:15px; }
+.partitions .toolbar-divider { min-width:1px; min-height:20px; margin:5px 0; background:#e4e8df; }
+.partitions .map-caption { margin:9px 0 22px; color:#8a9384; font-size:13px; }
+.partitions .free-count { color:#63795b; }
+.partitions .table-header { padding:0 12px 10px; color:#8a9386; font-size:13px; border-bottom:1px solid #dce1dc; }
+.partitions .partition-list { background:#fff; }
+.partitions .partition-row { padding:9px 12px; border:0; border-bottom:1px solid #e9ece5; border-radius:0; background:transparent; }
+.partitions .partition-row:hover { background:#f6f8f2; }
+.partitions .partition-row:selected { background:#edf4e9; color:#25302d; }
+.partitions .row-name { font-size:14px; font-weight:500; }
+.partitions .row-subtitle { font-size:13px; color:#8a9386; }
+.partitions .row-type { font-size:13px; color:#808b7b; }
+.partitions .row-size { font-size:14px; }
+.partitions .dot { min-width:10px; min-height:10px; border-radius:2px; }
+.partitions .color0 { background:#e9d7ae; }
+.partitions .color1 { background:#c3d5e8; }
+.partitions .color2 { background:#d4cce8; }
+.partitions .color3 { background:#badbc5; }
+.partitions .free-dot { background:#f0f3eb; border:1px dashed #9eac93; }
+.partitions .details { padding:1px 0 0 20px; border-left:1px solid #dce1dc; }
+.partitions .detail-title { font-size:16px; font-weight:500; }
+.partitions .capacity { font-size:32px; font-weight:400; }
+.partitions .detail-hint { color:#83907a; font-size:13px; }
+.partitions .detail-field { padding:9px 0; border-bottom:1px solid #e8ece3; }
+.partitions .detail-key { color:#8b9486; font-size:13px; }
+.partitions .footer { min-height:36px; padding:11px 19px; background:#f4f6f0; border-top:1px solid #d7ded1; border-radius:0 0 8px 8px; color:#7d8776; }
+.partitions .pending-status { color:#7d8776; font-size:13px; }
+.partitions-dialog { background:#fbfcf8; }
+.partitions-dialog headerbar { min-height:52px; padding:0 22px; background:linear-gradient(#f8faf4,#eef2e8); border:0; border-bottom:1px solid #dce2d5; border-radius:8px 8px 0 0; box-shadow:none; }
+.partitions-dialog .modal-title { font-size:16px; font-weight:500; }
+.partitions-dialog .modal-footer { padding:15px 22px; background:#f2f5ed; border-top:1px solid #dce2d5; }
+.partitions-dialog .modal-footer button { min-width:56px; }
+.partitions-dialog .placement-summary { margin-bottom:20px; color:#859177; font-size:14px; }
+.partitions-dialog .editor-capacity { font-size:24px; font-weight:500; color:#326547; }
+.partitions-dialog .placement-legend { margin-top:9px; color:#919b88; font-size:13px; }
+.partitions-dialog .placement-legend button { font-size:13px; }
+.partitions-dialog .drag-instruction { margin:14px 0 23px; color:#8c9781; font-size:13px; }
+.partitions-dialog .field-label { margin-bottom:7px; color:#6b7863; font-size:13px; font-weight:500; }
+.partitions-dialog .field-next { margin-top:18px; }
+.partitions-dialog entry,.partitions-dialog combobox button { min-height:19px; padding:7px 10px; border:1px solid #cfd6ca; border-radius:4px; background:#fff; box-shadow:inset 0 1px 2px alpha(#263322,.02); font-size:14px; }
+.partitions-dialog .form-hint { margin-top:15px; color:#859078; font-size:13px; }
+.partitions-dialog .growth-result { margin-top:22px; padding:15px; border-radius:5px; background:#eef5e8; color:#5a7d4a; font-size:14px; }
+.partitions-dialog .growth-note { font-size:13px; color:#819173; }
+.partitions-dialog .in-use-warning { padding:14px; border:1px solid #ead7b2; border-radius:5px; background:#fbf6e9; color:#816b40; font-size:13px; }
+.partitions-dialog .log-view { padding:12px; border:1px solid #dbe2d3; border-radius:4px; background:#f0f3eb; }
+.partitions-dialog .log-view textview,.partitions-dialog .log-view text { background:#f0f3eb; color:#25302d; font-size:13px; }
+.partitions-dialog entry { color:#25302d; }
+.partitions-dialog .format-warning { margin-bottom:22px; padding:15px; border-radius:5px; background:#fcf1e9; color:#a0694d; font-size:14px; }
+.partitions-dialog .format-note { color:#a88a73; font-size:13px; }
+.partitions-dialog .property-key { color:#8b9486; font-size:13px; }

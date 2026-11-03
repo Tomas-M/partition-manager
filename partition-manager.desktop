@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Partition Manager
+GenericName=Partition Manager
+Comment=Create partitions and filesystems and reclaim unused space
+Exec=partition-manager
+Icon=slax-partition-manager
+Terminal=false
+StartupNotify=true
+StartupWMClass=PartitionManager
+Categories=System;Filesystem;
+Keywords=Disk;Partition;Filesystem;USB;

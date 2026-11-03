@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+THIS=$(CDPATH= cd "$(dirname "$0")" && pwd)
+WORK=$(mktemp -d /tmp/partitions-test-XXXXXX)
+LOOP=
+
+# Detach only the loop created here; the VM's disks are never test targets.
+finish()
+{
+   STATUS=$?
+   trap - 0
+   if [ -n "$LOOP" ]; then
+      for NODE in "$LOOP"p*; do
+         findmnt -rn --source "$NODE" --output TARGET | while read -r TARGET; do
+            if [ "${TARGET#/tmp/partitions-test-mount-}" != "$TARGET" ]; then
+               umount "$TARGET"
+               rmdir "$TARGET"
+            fi
+         done
+      done
+      losetup -d "$LOOP"
+   fi
+   rm -rf "$WORK"
+   exit "$STATUS"
+}
+trap finish 0
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+truncate -s 2G "$WORK/disk.img"
+LOOP=$(losetup --find --show --partscan "$WORK/disk.img")
+"$THIS/build/partition-manager-test" --integration "$LOOP"

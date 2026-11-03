@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+THIS=$(CDPATH= cd "$(dirname "$0")" && pwd)
+WORK=$(mktemp -d /tmp/partitions-test-ui-XXXXXX)
+LOOP=
+
+# This GUI test plans changes on its own loop fixture and verifies no disk writes.
+finish()
+{
+   STATUS=$?
+   trap - 0
+   if [ -n "$LOOP" ]; then
+      if mountpoint -q "$WORK/mount"; then
+         umount "$WORK/mount"
+      fi
+      losetup -d "$LOOP"
+   fi
+   rm -rf "$WORK"
+   exit "$STATUS"
+}
+trap finish 0
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+truncate -s 2G "$WORK/disk.img"
+printf 'label: gpt\nstart=2048, size=262144\n' | sfdisk "$WORK/disk.img" > "$WORK/layout.log"
+LOOP=$(losetup --find --show --partscan "$WORK/disk.img")
+mkfs.ext4 -q "$LOOP"p1
+mkdir "$WORK/mount"
+mount "$LOOP"p1 "$WORK/mount"
+make -C "$THIS" build/partition-manager-ui-test
+xvfb-run -a -s '-screen 0 1440x900x24' env G_DEBUG=fatal-criticals "$THIS/build/partition-manager-ui-test" "$LOOP"
