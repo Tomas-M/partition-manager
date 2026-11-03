@@ -506,7 +506,6 @@ static void render(App *app, gboolean rebuild_rows)
         if (item.number==chosen.number && item.start==chosen.start) gtk_list_box_select_row(GTK_LIST_BOX(app->rows),GTK_LIST_BOX_ROW(row));
         g_free(name); g_free(path); g_free(capacity);
     }
-    gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(app->row_scroll),MIN(6,list->len)*57);
     g_array_unref(list); gtk_widget_show_all(app->rows); g_signal_handlers_unblock_by_func(app->rows,row_selected,app);
     guint64 total_free=0,total_allocated=0; GArray *regions=free_regions(disk);
     for (guint i=0;i<regions->len;i++) total_free+=g_array_index(regions,Region,i).size*disk->sector;

@@ -23,7 +23,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 truncate -s 2G "$WORK/disk.img"
-printf 'label: gpt\nstart=2048, size=262144\n' | sfdisk "$WORK/disk.img" > "$WORK/layout.log"
+printf 'label: gpt\nstart=2048, size=262144\nstart=2097152, size=131072\n' | sfdisk "$WORK/disk.img" > "$WORK/layout.log"
 LOOP=$(losetup --find --show --partscan "$WORK/disk.img")
 mkfs.ext4 -q "$LOOP"p1
 mkdir "$WORK/mount"

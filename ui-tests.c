@@ -317,6 +317,9 @@ static gboolean step(gpointer data)
         g_assert_cmpint(gtk_widget_get_allocated_width(styled(workspace,"sidebar")),==,sidebar_width);
         g_assert_cmpint(gtk_widget_get_allocated_width(styled(workspace,"details")),==,details_width);
         g_assert_cmpint(gtk_widget_get_allocated_width(styled(workspace,"disk-map")),<,map_width);
+        GtkWidget *scroll=gtk_widget_get_ancestor(list,GTK_TYPE_SCROLLED_WINDOW);
+        GtkAdjustment *vertical=gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll));
+        g_assert_cmpfloat(gtk_adjustment_get_upper(vertical),>,gtk_adjustment_get_page_size(vertical));
         capture(workspace,phase==17?"/tmp/partition-manager-900x480.png":"/tmp/partition-manager-820x360.png");
         if (phase==17) { gtk_window_resize(GTK_WINDOW(workspace),820,360); phase=18; }
         else { gtk_window_resize(GTK_WINDOW(workspace),1254,700); phase=19; }
