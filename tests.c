@@ -229,7 +229,19 @@ static int integration(const char *path)
     run(mount_argv); char *contents=NULL; g_assert_true(g_file_get_contents(marker,&contents,NULL,&error));
     g_assert_cmpstr(contents,==,"Data survives filesystem growth.\n"); g_free(contents);
     part->size=224*1048576/disk->sector;
-    g_assert_false(engine_apply(disk,backup,log,&options,&error)); g_assert_nonnull(strstr(error->message,"in use")); g_clear_error(&error); run(umount);
+    g_assert_false(engine_apply(disk,backup,log,&options,&error)); g_assert_nonnull(strstr(error->message,"in use")); g_clear_error(&error);
+    /* A process using the mount must prevent unmount; retrying preserves the plan. */
+    int held=open(marker,O_RDONLY); g_assert_cmpint(held,>=,0);
+    g_assert_false(engine_unmount(disk,&error)); g_assert_nonnull(error); g_clear_error(&error);
+    Disk *usage=engine_recheck(disk,&error); g_assert_nonnull(usage); g_assert_true(usage->busy); disk_free(usage); close(held);
+    char *bind=g_dir_make_tmp("partitions-test-mount-é space-XXXXXX",&error);
+    const char *bind_argv[]={"mount","--bind",mount,bind,NULL}; run(bind_argv);
+    g_assert_true(engine_unmount(disk,&error)); g_assert_no_error(error);
+    const char *still_mounted[]={"findmnt","--mountpoint",bind,NULL};
+    g_assert_false(command_run(still_mounted,NULL,-1,NULL,NULL,&error)); g_clear_error(&error);
+    g_assert_cmpint(rmdir(bind),==,0); g_free(bind);
+    usage=engine_recheck(disk,&error); g_assert_nonnull(usage); g_assert_false(usage->busy);
+    g_assert_cmpstr(disk->snapshot,==,usage->snapshot); g_assert_cmpuint(part->size,==,224*1048576/disk->sector); disk_free(usage);
     int lock=open(path,O_RDWR); g_assert_cmpint(flock(lock,LOCK_EX),==,0);
     g_assert_false(engine_apply(disk,backup,log,&options,&error)); g_assert_nonnull(strstr(error->message,"Another program")); g_clear_error(&error); close(lock);
     const char *rename[]={"sfdisk","--part-label",path,"1","Externally changed",NULL}; run(rename);

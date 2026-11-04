@@ -62,6 +62,8 @@ gboolean engine_new_table(Disk *disk, const char *label, GError **error);
 guint64 capacity_last(const Disk *disk);
 GPtrArray *engine_scan(const char *only, gboolean include_loop, GError **error);
 Disk *engine_read(const char *path, GError **error);
+Disk *engine_recheck(Disk *disk, GError **error);
+gboolean engine_unmount(Disk *disk, GError **error);
 gboolean engine_apply(Disk *disk, const char *backup_root, GString *log, ApplyOptions *options, GError **error);
 gboolean engine_check(Disk *disk, char **output, GError **error);
 

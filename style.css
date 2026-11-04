@@ -83,3 +83,4 @@
 .partitions-dialog .format-warning { margin-bottom:22px; padding:15px; border-radius:5px; background:#fcf1e9; color:#a0694d; font-size:14px; }
 .partitions-dialog .format-note { color:#a88a73; font-size:13px; }
 .partitions-dialog .property-key { color:#8b9486; font-size:13px; }
+.partitions-dialog .disk-ready { padding:14px; border:1px solid #d7e4cf; border-radius:5px; background:#eef5e8; color:#5a7d4a; font-size:13px; }

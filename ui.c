@@ -20,7 +20,7 @@ typedef struct
 typedef struct { guint disk; Disk *before; } Undo;
 typedef struct { guint64 start, size; gint number; } Item;
 typedef struct { Item item; double x, width; } Tile;
-typedef enum { SCAN, APPLY, CHECK } JobType;
+typedef enum { SCAN, APPLY, CHECK, USAGE, UNMOUNT } JobType;
 typedef struct { GPtrArray *plans; char *backup, *only; GString *log; JobType type; ApplyOptions options; gboolean include_loop; } Job;
 typedef enum { CREATE, ADJUST, GROW, FORMAT, RENAME } EditMode;
 typedef struct
@@ -38,6 +38,8 @@ static void render(App *app, gboolean rebuild_rows);
 static void start_job(App *app, JobType type, gboolean allow_busy);
 static void action(GtkButton *button, gpointer data);
 static void activate_selection(App *app);
+static void job_free(gpointer data);
+static void worker(GTask *task, gpointer source, gpointer data, GCancellable *cancel);
 static const double colors[][3]={{233/255.,215/255.,174/255.},{195/255.,213/255.,232/255.},{212/255.,204/255.,232/255.},{186/255.,219/255.,197/255.}};
 static const double text_colors[][3]={{114/255.,89/255.,31/255.},{63/255.,92/255.,123/255.},{100/255.,82/255.,130/255.},{55/255.,99/255.,71/255.}};
 static const double editor_inset=12;
@@ -805,35 +807,120 @@ static void acknowledge_busy(GtkToggleButton *checkbox, gpointer data)
     gtk_widget_set_sensitive(data,gtk_toggle_button_get_active(checkbox) && !g_object_get_data(G_OBJECT(data),"read-only"));
 }
 
+typedef struct
+{
+    App *app;
+    GtkWidget *dialog, *apply, *status, *ack, *unmount, *spinner;
+    gboolean ready, busy;
+} Review;
+
+/* Restore usage labels without replacing any pending edits or undo history. */
+static void update_usage(Disk *disk, Disk *current)
+{
+    disk->busy=current->busy;
+    GPtrArray *lists[]={disk->base,disk->parts};
+    for (guint n=0; n<G_N_ELEMENTS(lists); n++)
+        for (guint i=0; i<lists[n]->len; i++)
+        {
+            Partition *part=lists[n]->pdata[i];
+            if (part->number && !part->origin) continue;
+            Partition *live=find_part(current->parts,part->origin); if (!live) continue;
+            part->busy=live->busy; g_free(part->mount); part->mount=g_strdup(live->mount);
+        }
+}
+
+/* Only a completed fresh check can enable applying or acknowledge remaining use. */
+static void review_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+    (void)data; Review *review=g_object_get_data(source,"review"); App *app=review->app;
+    Job *job=g_task_get_task_data(G_TASK(result)); GError *error=NULL;
+    GPtrArray *disks=g_task_propagate_pointer(G_TASK(result),&error); gboolean mounted=FALSE;
+    app->working=FALSE; gtk_widget_set_sensitive(app->body,TRUE);
+    review->busy=FALSE; review->ready=disks!=NULL;
+    for (guint i=0; disks && i<disks->len; i++)
+    {
+        Disk *current=disks->pdata[i]; review->busy|=current->busy;
+        for (guint n=0; n<current->parts->len; n++) mounted|=((Partition *)current->parts->pdata[n])->mount[0]=='/';
+        for (guint n=0; n<app->disks->len; n++)
+            if (!strcmp(((Disk *)app->disks->pdata[n])->path,current->path)) update_usage(app->disks->pdata[n],current);
+    }
+    render(app,TRUE);
+    if (review->dialog)
+    {
+        GtkStyleContext *context=gtk_widget_get_style_context(review->status);
+        gtk_style_context_remove_class(context,"in-use-warning"); gtk_style_context_remove_class(context,"disk-ready");
+        style(review->status,error || review->busy?"in-use-warning":"disk-ready");
+        const char *text="Disk is ready. No mounted filesystems or other active uses were detected.";
+        if (review->busy) text="This disk is in use. Changes affecting mounted filesystems can destroy data or stop the running system. Nothing will be unmounted automatically. Some changes may require a restart.";
+        char *detail=g_strdup_printf("%s%s%s",error?error->message:text,job->log->len?"\n\n":"",job->log->str);
+        gtk_label_set_text(GTK_LABEL(review->status),detail); g_free(detail);
+        gtk_spinner_stop(GTK_SPINNER(review->spinner)); gtk_widget_hide(review->spinner);
+        gtk_widget_set_visible(review->ack,review->ready && review->busy);
+        gtk_button_set_label(GTK_BUTTON(review->unmount),error?"Check again":"Unmount partitions");
+        gtk_widget_set_visible(review->unmount,error || (mounted && !app->readonly)); gtk_widget_set_sensitive(review->unmount,TRUE);
+        gtk_widget_set_sensitive(review->apply,review->ready && !review->busy && !app->readonly);
+        int width; gtk_window_get_size(GTK_WINDOW(review->dialog),&width,NULL); gtk_window_resize(GTK_WINDOW(review->dialog),width,1);
+    }
+    if (disks) g_ptr_array_unref(disks);
+    g_clear_error(&error);
+}
+
+/* Snapshot plans before checking or explicitly requesting non-forced unmounts. */
+static void review_check(GtkButton *button, gpointer data)
+{
+    Review *review=data; App *app=review->app;
+    Job *job=g_new0(Job,1); job->type=button && review->ready?UNMOUNT:USAGE;
+    job->plans=g_ptr_array_new_with_free_func(disk_free); job->log=g_string_new(NULL);
+    for (guint i=0; i<app->disks->len; i++)
+        if (disk_changed(app->disks->pdata[i])) g_ptr_array_add(job->plans,disk_copy(app->disks->pdata[i]));
+    review->ready=FALSE; app->working=TRUE; gtk_widget_set_sensitive(app->body,FALSE);
+    gtk_widget_set_sensitive(app->undo,FALSE); gtk_widget_set_sensitive(app->review,FALSE);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(review->ack),FALSE); gtk_widget_hide(review->ack);
+    gtk_widget_set_sensitive(review->apply,FALSE); gtk_widget_set_sensitive(review->unmount,FALSE);
+    if (!button) gtk_widget_hide(review->unmount);
+    gtk_label_set_text(GTK_LABEL(review->status),job->type==UNMOUNT?"Unmounting partitions safely…":"Checking disk use…");
+    gtk_widget_show(review->spinner); gtk_spinner_start(GTK_SPINNER(review->spinner));
+    GTask *task=g_task_new(review->dialog,NULL,review_done,NULL); g_task_set_task_data(task,job,job_free);
+    g_task_run_in_thread(task,worker); g_object_unref(task);
+}
+
 /* Present the exact plan and require an explicit acknowledgement for in-use disks. */
 static void review(App *app)
 {
     GtkWidget *dialog=make_dialog(app,"Review changes",680,"Apply changes"), *body=g_object_get_data(G_OBJECT(dialog),"body");
     GtkWidget *apply=gtk_dialog_get_widget_for_response(GTK_DIALOG(dialog),GTK_RESPONSE_ACCEPT);
     g_object_set_data(G_OBJECT(apply),"read-only",GINT_TO_POINTER(app->readonly)); gtk_widget_set_sensitive(apply,!app->readonly);
-    GtkWidget *scroll=gtk_scrolled_window_new(NULL,NULL), *box=gtk_box_new(GTK_ORIENTATION_VERTICAL,16); gboolean busy=FALSE;
+    GtkWidget *scroll=gtk_scrolled_window_new(NULL,NULL), *box=gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
     gtk_container_add(GTK_CONTAINER(scroll),box); gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(scroll),TRUE); gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(scroll),320);
     gtk_box_pack_start(GTK_BOX(body),scroll,TRUE,TRUE,0);
     for (guint i=0; i<app->disks->len; i++)
     {
         Disk *disk=app->disks->pdata[i]; if (!disk_changed(disk)) continue;
-        busy|=disk->busy;
         char *title=g_strdup_printf("%s — %s",disk->title,disk->path), *plan=plan_description(disk);
         gtk_box_pack_start(GTK_BOX(box),label(title,"row-name"),FALSE,FALSE,0);
         GtkWidget *text=label(plan,NULL); gtk_label_set_line_wrap(GTK_LABEL(text),TRUE); gtk_label_set_selectable(GTK_LABEL(text),TRUE);
         gtk_box_pack_start(GTK_BOX(box),text,FALSE,FALSE,0); g_free(title); g_free(plan);
     }
-    if (busy)
-    {
-        GtkWidget *warning=label("This disk is in use. Changes affecting mounted filesystems can destroy data or stop the running system. Nothing will be unmounted automatically. Some changes may require a restart.","in-use-warning");
-        gtk_label_set_line_wrap(GTK_LABEL(warning),TRUE); gtk_label_set_max_width_chars(GTK_LABEL(warning),70); gtk_box_pack_start(GTK_BOX(body),warning,FALSE,FALSE,16);
-        GtkWidget *checkbox=gtk_check_button_new_with_label("I accept the risk of changing disks that are in use.");
-        gtk_widget_set_sensitive(apply,FALSE);
-        g_signal_connect(checkbox,"toggled",G_CALLBACK(acknowledge_busy),apply); gtk_box_pack_start(GTK_BOX(body),checkbox,FALSE,FALSE,0);
-    }
-    gtk_widget_show_all(dialog); int response=gtk_dialog_run(GTK_DIALOG(dialog)); gtk_widget_destroy(dialog);
-    if (response==GTK_RESPONSE_ACCEPT && !app->readonly) start_job(app,APPLY,busy);
+    Review *review=g_new0(Review,1); review->app=app; review->dialog=dialog; review->apply=apply;
+    g_object_set_data_full(G_OBJECT(dialog),"review",review,g_free);
+    g_signal_connect_swapped(dialog,"destroy",G_CALLBACK(g_nullify_pointer),&review->dialog);
+    review->status=label("",NULL); gtk_label_set_line_wrap(GTK_LABEL(review->status),TRUE); gtk_label_set_max_width_chars(GTK_LABEL(review->status),70);
+    gtk_box_pack_start(GTK_BOX(body),review->status,FALSE,FALSE,16);
+    GtkWidget *controls=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,12);
+    review->unmount=gtk_button_new_with_label("Unmount partitions"); g_object_set_data(G_OBJECT(review->unmount),"action","unmount");
+    review->spinner=gtk_spinner_new(); gtk_box_pack_start(GTK_BOX(controls),review->spinner,FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(controls),review->unmount,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(body),controls,FALSE,FALSE,0);
+    g_signal_connect(review->unmount,"clicked",G_CALLBACK(review_check),review);
+    review->ack=gtk_check_button_new_with_label("I accept the risk of changing disks that are in use.");
+    g_signal_connect(review->ack,"toggled",G_CALLBACK(acknowledge_busy),apply); gtk_box_pack_start(GTK_BOX(body),review->ack,FALSE,FALSE,0);
+    gtk_widget_show_all(dialog); review_check(NULL,review);
+    int response=gtk_dialog_run(GTK_DIALOG(dialog));
+    gboolean accepted=response==GTK_RESPONSE_ACCEPT && review->ready && !app->working && !app->readonly;
+    gboolean busy=review->busy;
+    if (busy && !gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(review->ack))) accepted=FALSE;
+    gtk_widget_destroy(dialog);
+    if (accepted) start_job(app,APPLY,busy);
 }
 
 /* Properties use aligned metadata rows rather than an unstructured message box. */
@@ -944,6 +1031,22 @@ static void worker(GTask *task, gpointer source, gpointer data, GCancellable *ca
 {
     (void)source; (void)cancel; Job *job=data; GError *error=NULL;
     if (!engine_init(&error)) { g_task_return_error(task,error); return; }
+    if (job->type==USAGE || job->type==UNMOUNT)
+    {
+        GPtrArray *disks=g_ptr_array_new_with_free_func(disk_free);
+        for (guint i=0; i<job->plans->len; i++)
+        {
+            Disk *disk=job->plans->pdata[i];
+            if (job->type==UNMOUNT && !engine_unmount(disk,&error))
+            {
+                g_string_append_printf(job->log,"%s%s: %s",job->log->len?"\n":"",disk->path,error->message); g_clear_error(&error);
+            }
+            Disk *current=engine_recheck(disk,&error);
+            if (!current) { g_ptr_array_unref(disks); g_task_return_error(task,error); return; }
+            g_ptr_array_add(disks,current);
+        }
+        g_task_return_pointer(task,disks,(GDestroyNotify)g_ptr_array_unref); return;
+    }
     if (job->type==CHECK)
     {
         char *output=NULL; gboolean result=engine_check(job->plans->pdata[0],&output,&error);

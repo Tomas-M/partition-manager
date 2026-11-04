@@ -436,6 +436,22 @@ static gboolean same_identity(const Disk *disk, int fd, GError **error)
     return same && bytes==disk->bytes?TRUE:fail(error, "The selected device was replaced or its capacity changed. Refresh before applying changes.");
 }
 
+/* Refresh usage only while the selected device and original table still match. */
+Disk *engine_recheck(Disk *disk, GError **error)
+{
+    int fd=open(disk->path,O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
+    if (fd<0) { fail(error,"Cannot open %s: %s",disk->path,g_strerror(errno)); return NULL; }
+    Disk *current=same_identity(disk,fd,error)?engine_read(disk->path,error):NULL;
+    if (current)
+    {
+        gboolean same=same_identity(current,fd,error);
+        if (same && (strcmp(current->snapshot,disk->snapshot) || strcmp(current->serial,disk->serial) || strcmp(current->wwn,disk->wwn)))
+            same=fail(error,"This device or its partition table changed since the plan was created. Refresh and review the new layout.");
+        if (!same) { disk_free(current); current=NULL; }
+    }
+    close(fd); return current;
+}
+
 /* Write to a private backup directory before modifying any table or filesystem. */
 static char *make_backup(Disk *disk, const char *root, int fd, GString *log, GError **error)
 {
@@ -507,6 +523,31 @@ static int open_partition(Disk *disk, Partition *part, gboolean exclusive, GErro
     g_free(start); g_free(path);
     if (!correct) { close(fd); fail(error, "The kernel has not accepted partition %u's new boundaries. Filesystem operations were stopped.", part->number); return -1; }
     return fd;
+}
+
+/* Try ordinary unmounts on verified partitions, retaining busy mounts and other uses. */
+gboolean engine_unmount(Disk *disk, GError **error)
+{
+    Disk *current=engine_recheck(disk,error); if (!current) return FALSE;
+    int device=open(disk->path,O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
+    if (device<0) { disk_free(current); return fail(error,"Cannot open %s: %s",disk->path,g_strerror(errno)); }
+    if (!same_identity(current,device,error)) { close(device); disk_free(current); return FALSE; }
+    GString *errors=g_string_new(NULL);
+    for (guint i=current->parts->len; i>0; i--)
+    {
+        Partition *part=current->parts->pdata[i-1]; if (part->mount[0]!='/') continue;
+        GError *local=NULL; int fd=open_partition(current,part,FALSE,&local);
+        if (fd>=0)
+        {
+            const char *argv[]={"umount","--all-targets","--","/proc/self/fd/3",NULL};
+            command_run(argv,NULL,fd,NULL,NULL,&local); close(fd);
+        }
+        if (local) { g_string_append_printf(errors,"%s%s",errors->len?"\n":"",local->message); g_clear_error(&local); }
+    }
+    close(device); disk_free(current);
+    gboolean result=!errors->len;
+    if (!result) fail(error,"%s",errors->str);
+    g_string_free(errors,TRUE); return result;
 }
 
 /* Recheck filesystem identity and mounts immediately before a destructive operation. */
@@ -711,10 +752,8 @@ gboolean engine_apply(Disk *disk, const char *backup_root, GString *log, ApplyOp
     if (fd<0) return fail(error, "Cannot open %s for writing: %s", disk->path, g_strerror(errno));
     gboolean result=same_identity(disk, fd, error);
     if (result) result=lock_disk(fd,error);
-    Disk *current=result?engine_read(disk->path, error):NULL;
+    Disk *current=result?engine_recheck(disk,error):NULL;
     if (result && !current) result=FALSE;
-    if (result && (strcmp(current->snapshot, disk->snapshot) || strcmp(current->serial, disk->serial) || strcmp(current->wwn, disk->wwn)))
-        result=fail(error, "This device or its partition table changed since the plan was created. Refresh and review the new layout.");
     gboolean active=current && current->busy;
     if (result && active && !options->allow_busy) result=fail(error,"This disk is in use. Review and explicitly acknowledge the risk before applying changes.");
     if (result)

@@ -1,12 +1,15 @@
 #include "partition-manager.h"
 #include <gtk/gtk.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <string.h>
 
 static guint phase, attempts;
 static GtkWidget *workspace;
-static int sidebar_width, details_width, map_width;
+static int sidebar_width, details_width, map_width, window_width, window_height, held_mount;
 static GtkListBoxRow *stable_rows[2];
 static guint clicks;
+static char *fixture_path, *fixture_mount;
 
 /* Find semantic layout elements without depending on window coordinates. */
 static GtkWidget *styled(GtkWidget *root, const char *name)
@@ -76,6 +79,14 @@ static GtkWidget *dialog(void)
     for (GList *item=windows; item; item=item->next)
         if (GTK_IS_DIALOG(item->data) && gtk_widget_get_visible(item->data)) result=item->data;
     g_list_free(windows); return result;
+}
+
+/* Closing Review must leave its in-flight usage check safe to finish. */
+static gboolean cancel_review(gpointer data)
+{
+    (void)data; GtkWidget *modal=dialog(); g_assert_nonnull(modal);
+    g_assert_false(gtk_widget_is_sensitive(gtk_dialog_get_widget_for_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT)));
+    gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_CANCEL); return G_SOURCE_REMOVE;
 }
 
 /* Save real GTK rendering to a temporary QA artifact. */
@@ -202,13 +213,56 @@ static gboolean step(gpointer data)
     }
     else if (phase==20)
     {
-        if (!modal) return FALSE;
+        if (!modal || gtk_widget_get_visible(find(modal,GTK_TYPE_SPINNER,NULL))) return FALSE;
         g_assert_cmpstr(gtk_window_get_title(GTK_WINDOW(modal)),==,"Review changes");
         GtkWidget *apply=gtk_dialog_get_widget_for_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT), *checkbox=find(modal,GTK_TYPE_CHECK_BUTTON,NULL);
-        g_assert_nonnull(checkbox); g_assert_false(gtk_widget_is_sensitive(apply));
+        g_assert_true(gtk_widget_get_visible(checkbox)); g_assert_false(gtk_widget_is_sensitive(apply));
         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(checkbox),TRUE); g_assert_true(gtk_widget_is_sensitive(apply));
         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(checkbox),FALSE); g_assert_false(gtk_widget_is_sensitive(apply));
-        capture(modal,"/tmp/partitions-native-review.png"); phase=21; gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_CANCEL);
+        held_mount=open(fixture_mount,O_RDONLY); g_assert_cmpint(held_mount,>=,0);
+        capture(modal,"/tmp/partitions-native-review.png"); phase=69;
+        gtk_button_clicked(GTK_BUTTON(find(modal,GTK_TYPE_BUTTON,"unmount")));
+    }
+    else if (phase==69)
+    {
+        if (gtk_widget_get_visible(find(modal,GTK_TYPE_SPINNER,NULL))) return FALSE;
+        g_assert_nonnull(styled(modal,"in-use-warning")); g_assert_true(gtk_widget_get_visible(find(modal,GTK_TYPE_CHECK_BUTTON,NULL)));
+        g_assert_false(gtk_widget_is_sensitive(gtk_dialog_get_widget_for_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT)));
+        capture(modal,"/tmp/partition-manager-unmount-busy.png"); close(held_mount); phase=70;
+        gtk_button_clicked(GTK_BUTTON(find(modal,GTK_TYPE_BUTTON,"unmount")));
+    }
+    else if (phase==70)
+    {
+        if (gtk_widget_get_visible(find(modal,GTK_TYPE_SPINNER,NULL))) return FALSE;
+        g_assert_nonnull(styled(modal,"disk-ready"));
+        g_assert_false(gtk_widget_get_visible(find(modal,GTK_TYPE_CHECK_BUTTON,NULL)));
+        g_assert_true(gtk_widget_is_sensitive(gtk_dialog_get_widget_for_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT)));
+        GError *error=NULL; Disk *live=engine_read(fixture_path,&error); g_assert_nonnull(live); g_assert_false(live->busy); disk_free(live);
+        capture(modal,"/tmp/partition-manager-disk-ready.png"); phase=71; gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_CANCEL);
+    }
+    else if (phase==71)
+    {
+        if (modal) return FALSE;
+        char *node=g_strdup_printf("%sp1",fixture_path); const char *argv[]={"mount",node,fixture_mount,NULL}; GError *error=NULL;
+        g_assert_true(command_run(argv,NULL,-1,NULL,NULL,&error)); g_free(node);
+        phase=72; gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"review")));
+    }
+    else if (phase==72)
+    {
+        if (!modal || gtk_widget_get_visible(find(modal,GTK_TYPE_SPINNER,NULL))) return FALSE;
+        g_assert_nonnull(styled(modal,"in-use-warning")); g_assert_true(gtk_widget_get_visible(find(modal,GTK_TYPE_CHECK_BUTTON,NULL)));
+        g_assert_false(gtk_widget_is_sensitive(gtk_dialog_get_widget_for_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT)));
+        phase=74; gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_CANCEL);
+    }
+    else if (phase==74)
+    {
+        if (modal) return FALSE;
+        phase=75; g_idle_add(cancel_review,NULL); gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"review")));
+    }
+    else if (phase==75)
+    {
+        if (modal || !gtk_widget_is_sensitive(find(workspace,GTK_TYPE_BUTTON,"review"))) return FALSE;
+        phase=21;
     }
     else if (phase==21)
     {
@@ -323,6 +377,7 @@ static gboolean step(gpointer data)
     }
     else if (phase==31)
     {
+        gtk_window_get_size(GTK_WINDOW(workspace),&window_width,&window_height);
         sidebar_width=gtk_widget_get_allocated_width(styled(workspace,"sidebar"));
         details_width=gtk_widget_get_allocated_width(styled(workspace,"details"));
         map_width=gtk_widget_get_allocated_width(styled(workspace,"disk-map"));
@@ -350,7 +405,7 @@ static gboolean step(gpointer data)
         g_assert_cmpfloat(gtk_adjustment_get_value(properties),>,0);
         capture(workspace,phase==17?"/tmp/partition-manager-900x480.png":"/tmp/partition-manager-820x360.png");
         if (phase==17) { gtk_window_resize(GTK_WINDOW(workspace),820,360); phase=18; }
-        else { gtk_window_resize(GTK_WINDOW(workspace),1254,700); phase=19; }
+        else { gtk_window_resize(GTK_WINDOW(workspace),window_width,window_height); phase=19; }
     }
     else if (phase==19)
     {
@@ -385,7 +440,7 @@ static gboolean step(gpointer data)
     return FALSE;
 }
 
-/* The test owns a loop-backed fixture and verifies that GUI planning wrote nothing. */
+/* The test owns a loop-backed fixture and verifies that GUI planning left the partition table unchanged. */
 int main(int argc, char **argv)
 {
     gboolean empty_table=argc==3 && !strcmp(argv[1],"--empty-table");
@@ -393,11 +448,13 @@ int main(int argc, char **argv)
     g_assert_true(g_str_has_prefix(path,empty_table?"/tmp/":"/dev/loop"));
     GError *error=NULL; g_assert_true(engine_init(&error));
     Disk *before=engine_read(path,&error); g_assert_nonnull(before);
+    fixture_path=g_strdup(path);
+    if (!empty_table) fixture_mount=g_strdup(((Partition *)before->parts->pdata[0])->mount);
     g_timeout_add(150,step,GINT_TO_POINTER(empty_table));
     char *args[]={argv[0],NULL}; ui_run(1,args,path,FALSE,TRUE);
     Disk *after=engine_read(path,&error); g_assert_nonnull(after);
     g_assert_cmpstr(before->snapshot,==,after->snapshot);
-    disk_free(before); disk_free(after);
-    g_print("PASS: native GTK selection and mouse releases, two-edge resize, movement, Review with explicit in-use acknowledgement, Resize, Undo, current-size growth, responsive window layout with fixed side panes, map and row double-click actions, and no disk writes.\n");
+    disk_free(before); disk_free(after); g_free(fixture_path); g_free(fixture_mount);
+    g_print("PASS: native GTK selection and mouse releases, two-edge resize, movement, Review with explicit in-use acknowledgement, Resize, Undo, current-size growth, responsive window layout with fixed side panes, map and row double-click actions, safe unmount and fresh usage checks, and no partition-table writes.\n");
     return 0;
 }

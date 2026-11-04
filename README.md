@@ -81,12 +81,21 @@ not treated as a machine-readable description of every possible operation.
 
 ## Applying changes and in-use disks
 
-Changes are held in memory until review. If a disk is mounted, used as swap,
+Changes are held in memory until review. Each opening of Review reads current
+usage and checks that the device and partition table still match the plan.
+If a disk is mounted, used as swap,
 or has active device-mapper/RAID users, review shows a specific warning and
 requires an acknowledgement. The user may then change its table, including
 deleting mounted partition entries. The application does not automatically
 unmount filesystems or deactivate mappings. Affecting a mounted filesystem
 can corrupt its data or stop the running system.
+
+Review offers **Unmount partitions** for mounted filesystems. This explicit
+action uses ordinary unmounts, including bind mounts of the same filesystem;
+it never forces or lazily detaches a busy mount, disables swap, or deactivates
+mappings. A new usage check shows a green ready confirmation only when no
+active uses remain. Otherwise the warning and acknowledgement remain. Pending
+edits are preserved, and applying still rechecks usage immediately before writes.
 
 For an acknowledged in-use disk, sfdisk receives `--no-reread` and
 `--no-tell-kernel`. Individual entries are updated with `partx`, leaving

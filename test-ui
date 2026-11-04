@@ -4,7 +4,7 @@ THIS=$(CDPATH= cd "$(dirname "$0")" && pwd)
 WORK=$(mktemp -d /tmp/partitions-test-ui-XXXXXX)
 LOOP=
 
-# This GUI test plans changes on its own loop fixture and verifies no disk writes.
+# This GUI test plans changes on its own loop fixture and verifies no partition-table writes.
 finish()
 {
    STATUS=$?
