@@ -14,7 +14,7 @@
 .partitions button.suggested-action:hover,.partitions-dialog button.suggested-action:hover { background:#286b46; }
 .partitions button.icon-button { padding:6px; min-width:19px; }
 .partitions button.link-button,.partitions-dialog button.link-button { min-height:0; padding:5px 0; border:0; border-radius:0; background:none; box-shadow:none; color:#277652; }
-.partitions button:focus,.partitions-dialog button:focus { outline:2px solid #5b9c78; }
+.partitions button:focus,.partitions-dialog button:focus { outline:none; border-color:#8ca590; }
 .partitions .sidebar { background:#f3f5ef; border:0; border-right:1px solid #dce1dc; }
 .partitions .sidebar viewport { background:#f3f5ef; }
 .partitions .sidebar-inner { padding:22px 10px 16px; }
@@ -60,7 +60,7 @@
 .partitions .detail-key { color:#8b9486; font-size:13px; }
 .partitions .footer { min-height:36px; padding:11px 19px; background:#f4f6f0; border-top:1px solid #d7ded1; border-radius:0; color:#7d8776; }
 .partitions .pending-status { color:#7d8776; font-size:13px; }
-.partitions-dialog { background:#fbfcf8; }
+.partitions-dialog { background:#fbfcf8; -GtkDialog-button-spacing:9; }
 .partitions-dialog headerbar { min-height:52px; padding:0 22px; background:linear-gradient(#f8faf4,#eef2e8); border:0; border-bottom:1px solid #dce2d5; border-radius:8px 8px 0 0; box-shadow:none; }
 .partitions-dialog .modal-title { font-size:16px; font-weight:500; }
 .partitions-dialog .modal-footer { padding:15px 22px; background:#f2f5ed; border-top:1px solid #dce2d5; }

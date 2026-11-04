@@ -120,7 +120,6 @@ static GtkWidget *make_dialog(App *app, const char *title, int width, const char
     GtkWidget *body=gtk_box_new(GTK_ORIENTATION_VERTICAL,0); gtk_container_set_border_width(GTK_CONTAINER(body),23);
     gtk_box_pack_start(GTK_BOX(content),body,TRUE,TRUE,0); g_object_set_data(G_OBJECT(dialog),"body",body);
     GtkWidget *footer=gtk_dialog_get_action_area(GTK_DIALOG(dialog)); style(footer,"modal-footer");
-    gtk_box_set_spacing(GTK_BOX(footer),9);
     gtk_button_box_set_child_non_homogeneous(GTK_BUTTON_BOX(footer),gtk_dialog_get_widget_for_response(GTK_DIALOG(dialog),GTK_RESPONSE_CANCEL),TRUE);
     gtk_button_box_set_child_non_homogeneous(GTK_BUTTON_BOX(footer),gtk_dialog_get_widget_for_response(GTK_DIALOG(dialog),GTK_RESPONSE_ACCEPT),TRUE);
     GtkWidget *apply=gtk_dialog_get_widget_for_response(GTK_DIALOG(dialog),GTK_RESPONSE_ACCEPT); style(apply,"suggested-action");
