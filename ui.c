@@ -102,7 +102,7 @@ static GtkWidget *table_columns(GtkWidget *name, GtkWidget *filesystem)
 {
     GtkWidget *grid=gtk_grid_new(); gtk_grid_set_column_homogeneous(GTK_GRID(grid),TRUE);
     gtk_widget_set_hexpand(grid,TRUE); gtk_widget_set_margin_end(name,12);
-    gtk_grid_attach(GTK_GRID(grid),name,0,0,4,1); gtk_grid_attach(GTK_GRID(grid),filesystem,4,0,1,1);
+    gtk_grid_attach(GTK_GRID(grid),name,0,0,2,1); gtk_grid_attach(GTK_GRID(grid),filesystem,2,0,1,1);
     return grid;
 }
 

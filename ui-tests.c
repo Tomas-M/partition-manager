@@ -321,8 +321,8 @@ static gboolean step(gpointer data)
         GtkAdjustment *vertical=gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll));
         g_assert_cmpfloat(gtk_adjustment_get_upper(vertical),>,gtk_adjustment_get_page_size(vertical));
         GtkWidget *columns=find(styled(workspace,"table-header"),GTK_TYPE_GRID,NULL);
-        GtkWidget *name=gtk_grid_get_child_at(GTK_GRID(columns),0,0), *filesystem=gtk_grid_get_child_at(GTK_GRID(columns),4,0);
-        g_assert_cmpint(gtk_widget_get_allocated_width(filesystem)*2,<,gtk_widget_get_allocated_width(name));
+        GtkWidget *name=gtk_grid_get_child_at(GTK_GRID(columns),0,0), *filesystem=gtk_grid_get_child_at(GTK_GRID(columns),2,0);
+        g_assert_cmpint(abs(gtk_widget_get_allocated_width(filesystem)*2-gtk_widget_get_allocated_width(name)-gtk_widget_get_margin_end(name)),<=,2);
         GtkWidget *details_scroll=gtk_widget_get_ancestor(styled(workspace,"details"),GTK_TYPE_SCROLLED_WINDOW);
         g_assert_true(gtk_scrolled_window_get_overlay_scrolling(GTK_SCROLLED_WINDOW(details_scroll)));
         GtkAdjustment *properties=gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(details_scroll));
