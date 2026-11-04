@@ -1035,7 +1035,7 @@ int ui_run(int argc, char **argv, const char *only, gboolean readonly, gboolean 
     GtkCssProvider *css=gtk_css_provider_new(); gtk_css_provider_load_from_resource(css,"/org/slax/partition-manager/style.css");
     gtk_style_context_add_provider_for_screen(gdk_screen_get_default(),GTK_STYLE_PROVIDER(css),GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); g_object_unref(css);
     app.window=gtk_window_new(GTK_WINDOW_TOPLEVEL); gtk_window_set_wmclass(GTK_WINDOW(app.window),"partition-manager","PartitionManager");
-    gtk_window_set_title(GTK_WINDOW(app.window),"Partition Manager"); gtk_window_set_default_size(GTK_WINDOW(app.window),1254,585); gtk_window_set_position(GTK_WINDOW(app.window),GTK_WIN_POS_CENTER);
+    gtk_window_set_title(GTK_WINDOW(app.window),"Partition Manager"); gtk_window_set_default_size(GTK_WINDOW(app.window),975,585); gtk_window_set_position(GTK_WINDOW(app.window),GTK_WIN_POS_CENTER);
     GdkPixbuf *mark=gdk_pixbuf_new_from_resource_at_scale("/org/slax/partition-manager/app-icon.png",128,128,TRUE,NULL);
     gtk_window_set_default_icon(mark); g_clear_object(&mark); style(app.window,"partitions");
     app.size_group=gtk_size_group_new(GTK_SIZE_GROUP_HORIZONTAL);
