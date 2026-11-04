@@ -7,7 +7,7 @@
 typedef struct
 {
     GtkWidget *window, *sidebar, *heading, *subtitle, *notice, *map, *rows, *details;
-    GtkWidget *body, *content, *status, *spinner, *undo, *review, *create, *edit, *grow, *format, *remove;
+    GtkWidget *body, *content, *status, *spinner, *undo, *review, *create, *edit, *resize, *format, *remove;
     GtkWidget *header_device, *header_icon, *allocated, *available, *row_scroll, *status_icon;
     GtkSizeGroup *size_group;
     GPtrArray *disks, *history;
@@ -37,7 +37,7 @@ typedef struct
 static void render(App *app, gboolean rebuild_rows);
 static void start_job(App *app, JobType type, gboolean allow_busy);
 static void action(GtkButton *button, gpointer data);
-static void new_table_dialog(App *app);
+static void activate_selection(App *app);
 static const double colors[][3]={{233/255.,215/255.,174/255.},{195/255.,213/255.,232/255.},{212/255.,204/255.,232/255.},{186/255.,219/255.,197/255.}};
 static const double text_colors[][3]={{114/255.,89/255.,31/255.},{63/255.,92/255.,123/255.},{100/255.,82/255.,130/255.},{55/255.,99/255.,71/255.}};
 
@@ -359,23 +359,21 @@ static gboolean map_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
     g_array_unref(list); return FALSE;
 }
 
-/* Existing partitions select on click; only the creation dialog permits dragging. */
+/* Select the map interval before dispatching its default double-click action. */
 static gboolean map_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
 {
     App *app=data;
     if (event->button!=1 || !app->disks->len) return FALSE;
-    GArray *list=tiles(app, gtk_widget_get_allocated_width(widget));
+    GArray *list=tiles(app, gtk_widget_get_allocated_width(widget)); gboolean hit=FALSE;
     for (guint i=0; i<list->len; i++)
     {
         Tile tile=g_array_index(list, Tile, i);
         if (event->x>=tile.x && event->x<=tile.x+tile.width)
-        { app->selected=tile.item.number; app->free_start=tile.item.start; render(app,FALSE); break; }
+        { app->selected=tile.item.number; app->free_start=tile.item.start; render(app,FALSE); hit=TRUE; break; }
     }
     g_array_unref(list);
-    Disk *disk=app->disks->pdata[app->active];
-    gboolean needs_table=strcmp(disk->label,"gpt") && strcmp(disk->label,"dos");
-    if (event->type==GDK_2BUTTON_PRESS && needs_table) new_table_dialog(app);
-    return TRUE;
+    if (hit && event->type==GDK_2BUTTON_PRESS) activate_selection(app);
+    return hit;
 }
 
 /* Native list selection and the map always point to the same model interval. */
@@ -388,12 +386,10 @@ static void row_selected(GtkListBox *box, GtkListBoxRow *row, gpointer data)
     app->selected=item->number; app->free_start=item->start; render(app,FALSE);
 }
 
-/* Double-clicking a row offers a table only when GPT or MBR is absent. */
+/* Rows and map cells share the same context-sensitive activation. */
 static void row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer data)
 {
-    App *app=data; row_selected(box,row,app);
-    Disk *disk=app->disks->pdata[app->active];
-    if (strcmp(disk->label,"gpt") && strcmp(disk->label,"dos")) new_table_dialog(app);
+    App *app=data; row_selected(box,row,app); activate_selection(app);
 }
 
 /* Switch devices without discarding pending operations on the previous disk. */
@@ -468,8 +464,8 @@ static void render(App *app, gboolean rebuild_rows)
     GtkStyleContext *create_style=gtk_widget_get_style_context(app->create);
     if (editable && !part) gtk_style_context_add_class(create_style,"suggested-action"); else gtk_style_context_remove_class(create_style,"suggested-action");
     gtk_widget_set_sensitive(app->edit, editable && part && part->number && (!part->origin || !strcmp(disk->label,"gpt")));
-    gtk_label_set_text(GTK_LABEL(g_object_get_data(G_OBJECT(app->edit),"caption")),part && !part->origin?"Adjust":"Rename");
-    gtk_widget_set_sensitive(app->grow, editable && can_grow(disk,part));
+    gboolean planned=part && part->number && !part->origin;
+    gtk_widget_set_sensitive(app->resize, editable && (planned || can_grow(disk,part)));
     gtk_widget_set_sensitive(app->format, editable && part && part->number && !part->readonly);
     gtk_widget_set_sensitive(app->remove, editable && part && part->number);
     g_signal_handlers_block_by_func(app->rows, row_selected, app);
@@ -543,7 +539,7 @@ static void render(App *app, gboolean rebuild_rows)
             char *fs_size=format_size(part->fsbytes), *text=g_strdup_printf("Filesystem: %s",fs_size);
             gtk_box_pack_start(GTK_BOX(app->details),label(text,"muted"),FALSE,FALSE,6); g_free(fs_size); g_free(text);
         }
-        if (!part->origin && part->number) gtk_box_pack_start(GTK_BOX(app->details),button(app,"Adjust partition","pen-to-square","edit"),FALSE,FALSE,12);
+        if (!part->origin && part->number) gtk_box_pack_start(GTK_BOX(app->details),button(app,"Resize partition","up-right-and-down-left-from-center","resize"),FALSE,FALSE,12);
     }
     gtk_widget_show_all(app->details); g_free(name); g_free(capacity);
     guint pending=0;
@@ -691,8 +687,8 @@ static void edit_partition(App *app, EditMode mode)
         editor.start=align_up(item.start,1048576/disk->sector);
         editor.total=item.start+item.size-editor.start; editor.size=MIN(editor.total,G_GUINT64_CONSTANT(2147483648)/disk->sector);
     }
-    const char *titles[]={"New partition","Adjust new partition","Grow partition","Format partition","Rename partition"};
-    char *target=part?part_path(disk,part):g_strdup(""), *dialog_title=mode==GROW?g_strdup_printf("Grow %s",*part->name?part->name:target):g_strdup(titles[mode]);
+    const char *titles[]={"New partition","Resize new partition","Resize partition","Format partition","Rename partition"};
+    char *target=part?part_path(disk,part):g_strdup(""), *dialog_title=mode==GROW?g_strdup_printf("Resize %s",*part->name?part->name:target):g_strdup(titles[mode]);
     editor.dialog=make_dialog(app,dialog_title,mode<=GROW?640:500,mode==FORMAT?"Add format to plan":"Add to plan"); g_free(dialog_title);
     GtkWidget *content=g_object_get_data(G_OBJECT(editor.dialog),"body");
     if (mode==FORMAT)
@@ -876,6 +872,18 @@ static void new_table_dialog(App *app)
     gtk_widget_destroy(dialog);
 }
 
+/* Reuse enabled toolbar actions so double-clicks respect the same editing limits. */
+static void activate_selection(App *app)
+{
+    if (app->working || !app->disks->len) return;
+    Disk *disk=app->disks->pdata[app->active];
+    if (strcmp(disk->label,"gpt") && strcmp(disk->label,"dos")) { new_table_dialog(app); return; }
+    GtkWidget *target=app->create;
+    if (selected_part(app)) target=gtk_widget_is_sensitive(app->resize)?app->resize:app->edit;
+    if (gtk_widget_is_sensitive(target)) gtk_button_clicked(GTK_BUTTON(target));
+    else properties(app,disk);
+}
+
 /* Route the small toolbar directly to its focused native dialog or model edit. */
 static void action(GtkButton *widget, gpointer data)
 {
@@ -892,8 +900,8 @@ static void action(GtkButton *widget, gpointer data)
     if (!app->disks->len) return;
     Disk *disk=app->disks->pdata[app->active]; Partition *part=selected_part(app);
     if (!strcmp(command,"create")) edit_partition(app,CREATE);
-    if (!strcmp(command,"edit")) edit_partition(app,part->origin?RENAME:ADJUST);
-    if (!strcmp(command,"grow")) edit_partition(app,GROW);
+    if (!strcmp(command,"edit")) edit_partition(app,RENAME);
+    if (!strcmp(command,"resize")) edit_partition(app,part->origin?GROW:ADJUST);
     if (!strcmp(command,"format")) edit_partition(app,FORMAT);
     if (!strcmp(command,"delete"))
     {
@@ -1054,8 +1062,8 @@ int ui_run(int argc, char **argv, const char *only, gboolean readonly, gboolean 
     gtk_box_pack_start(GTK_BOX(tools),button(&app,"Check","check","check"),FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(tools),button(&app,NULL,"circle-info","info"),FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(tools),button(&app,NULL,"floppy-disk","save"),FALSE,FALSE,0); gtk_box_pack_end(GTK_BOX(heading),tools,FALSE,FALSE,0);
     gtk_box_pack_start(GTK_BOX(main),heading,FALSE,FALSE,0); app.notice=gtk_box_new(GTK_ORIENTATION_VERTICAL,8); gtk_box_pack_start(GTK_BOX(main),app.notice,FALSE,FALSE,0);
     GtkWidget *toolbar=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,6); style(toolbar,"toolbar");
-    app.create=button(&app,"New","plus","create"); app.edit=button(&app,"Rename / Adjust","pen-to-square","edit"); app.grow=button(&app,"Grow","up-right-and-down-left-from-center","grow"); app.format=button(&app,"Format","eraser","format"); app.remove=button(&app,NULL,"trash-can","delete");
-    gtk_box_pack_start(GTK_BOX(toolbar),app.create,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(toolbar),app.edit,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(toolbar),app.grow,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(toolbar),app.format,FALSE,FALSE,0);
+    app.create=button(&app,"New","plus","create"); app.edit=button(&app,"Rename","pen-to-square","edit"); app.resize=button(&app,"Resize","up-right-and-down-left-from-center","resize"); app.format=button(&app,"Format","eraser","format"); app.remove=button(&app,NULL,"trash-can","delete");
+    gtk_box_pack_start(GTK_BOX(toolbar),app.create,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(toolbar),app.edit,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(toolbar),app.resize,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(toolbar),app.format,FALSE,FALSE,0);
     GtkWidget *divider=gtk_separator_new(GTK_ORIENTATION_VERTICAL); style(divider,"toolbar-divider"); gtk_box_pack_start(GTK_BOX(toolbar),divider,FALSE,FALSE,5);
     gtk_box_pack_start(GTK_BOX(toolbar),app.remove,FALSE,FALSE,0); GtkWidget *new_table=button(&app,"New table…",NULL,"new-table"); style(new_table,"link-button"); gtk_box_pack_end(GTK_BOX(toolbar),new_table,FALSE,FALSE,0);
     gtk_box_pack_start(GTK_BOX(main),toolbar,FALSE,FALSE,0);

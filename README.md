@@ -37,15 +37,18 @@ library dependencies derived by `dpkg-shlibdeps`.
 - GPT and the four primary partitions of MBR tables.
 - Create, delete, rename GPT partitions, create a new table and repair a
   flashed image's GPT to use the full device.
-- New, pending partitions resize from either edge and move within their
-  free interval. Existing partitions stay fixed and can only grow right.
+- Resize edits pending partitions from either edge and moves them within their
+  free interval. For existing partitions, Resize only offers supported growth
+  to the right; their start stays fixed. Rename remains a separate action.
 - Coarse capacity labels, without manual sector or size inputs.
 - Unallocated intervals are derived from occupied extents, including
   alignment padding. Adjacent free space always appears as one area.
 - Per-device icons distinguish USB, ordinary disks, RAID and virtual devices.
 - Undo changes to the plan, review the complete diff and explicitly apply it.
 - Check the partition table and export the exact proposed sfdisk script.
-- Double-click the disk map or a row to choose a new table when GPT/MBR is absent.
+- Double-click a map cell or row to create a partition in unallocated space,
+  resize a partition, or rename it when resizing is unavailable. When GPT/MBR
+  is absent, double-click opens the new partition table dialog.
 
 The GTK CSS and Cairo geometry implement the native window frame, allocation
 map, aligned table columns, detail panel and draggable editor directly.
@@ -128,7 +131,7 @@ and loop device under `/tmp`, tests all six formatters and four growers,
 checks preserved ext4 data, locks and stale-plan rejection, and exercises
 acknowledged changes with a mounted source partition. The GUI test uses its
 own loop fixture and Xvfb; it verifies selection, both resize edges, movement,
-Adjust, Undo and Grow starting at the current size, without applying its plan.
+Resize, Undo and context-sensitive map/row double-clicks without applying its plan.
 GUI screenshots are written under `/tmp/partitions-native-*.png`.
 
 Loop tests require root, the listed filesystem tools, `losetup`, and, for

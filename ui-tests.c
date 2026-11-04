@@ -120,6 +120,14 @@ static void click_row(GtkListBoxRow *row)
     }
 }
 
+/* Dispatch a double-click at a known fixture interval in the graphical map. */
+static void double_click_map(GtkWidget *map, double x)
+{
+    gboolean handled=FALSE;
+    GdkEventButton event={.type=GDK_2BUTTON_PRESS,.button=1,.x=x,.y=30};
+    g_signal_emit_by_name(map,"button-press-event",&event,&handled); g_assert_true(handled);
+}
+
 /* A reentrant timer continues through gtk_dialog_run's nested main loops. */
 static gboolean step(gpointer data)
 {
@@ -171,7 +179,7 @@ static gboolean step(gpointer data)
         g_assert_null(modal); capture(workspace,"/tmp/partitions-native-workspace.png");
         gtk_list_box_select_row(GTK_LIST_BOX(list),gtk_list_box_get_row_at_index(GTK_LIST_BOX(list),1));
         GtkWidget *create=find(workspace,GTK_TYPE_BUTTON,"create"); g_assert_true(gtk_widget_is_sensitive(create));
-        phase=1; gtk_button_clicked(GTK_BUTTON(create));
+        phase=1; GtkListBoxRow *row=gtk_list_box_get_selected_row(GTK_LIST_BOX(list)); click_row(row); click_row(row);
     }
     else if (phase==1)
     {
@@ -188,8 +196,8 @@ static gboolean step(gpointer data)
     else if (phase==2)
     {
         if (modal) return FALSE;
-        GtkWidget *edit=find(workspace,GTK_TYPE_BUTTON,"edit");
-        GtkWidget *caption=g_object_get_data(G_OBJECT(edit),"caption"); g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(caption)),==,"Adjust");
+        GtkWidget *resize=find(workspace,GTK_TYPE_BUTTON,"resize");
+        GtkWidget *caption=g_object_get_data(G_OBJECT(resize),"caption"); g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(caption)),==,"Resize");
         capture(workspace,"/tmp/partitions-native-plan.png"); phase=20; gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"review")));
     }
     else if (phase==20)
@@ -205,12 +213,12 @@ static gboolean step(gpointer data)
     else if (phase==21)
     {
         if (modal) return FALSE;
-        phase=3; gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"edit")));
+        phase=3; GtkListBoxRow *row=gtk_list_box_get_selected_row(GTK_LIST_BOX(list)); click_row(row); click_row(row);
     }
     else if (phase==3)
     {
         if (!modal) return FALSE;
-        g_assert_cmpstr(gtk_window_get_title(GTK_WINDOW(modal)),==,"Adjust new partition");
+        g_assert_cmpstr(gtk_window_get_title(GTK_WINDOW(modal)),==,"Resize new partition");
         capture(modal,"/tmp/partitions-native-adjust.png");
         phase=4; gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_CANCEL);
     }
@@ -220,13 +228,13 @@ static gboolean step(gpointer data)
         gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"undo")));
         list=partition_list(workspace);
         gtk_list_box_select_row(GTK_LIST_BOX(list),gtk_list_box_get_row_at_index(GTK_LIST_BOX(list),0));
-        GtkWidget *grow=find(workspace,GTK_TYPE_BUTTON,"grow"); g_assert_true(gtk_widget_is_sensitive(grow));
-        phase=5; gtk_button_clicked(GTK_BUTTON(grow));
+        GtkWidget *resize=find(workspace,GTK_TYPE_BUTTON,"resize"); g_assert_true(gtk_widget_is_sensitive(resize));
+        phase=5; double_click_map(styled(workspace,"disk-map"),12);
     }
     else if (phase==5)
     {
         if (!modal) return FALSE;
-        g_assert_true(g_str_has_prefix(gtk_window_get_title(GTK_WINDOW(modal)),"Grow "));
+        g_assert_true(g_str_has_prefix(gtk_window_get_title(GTK_WINDOW(modal)),"Resize "));
         GtkWidget *size=capacity(modal);
         g_assert_cmpstr(gtk_label_get_text(GTK_LABEL(size)),==,"128.0 MiB");
         capture(modal,"/tmp/partitions-native-grow.png");
@@ -236,6 +244,17 @@ static gboolean step(gpointer data)
     {
         if (modal) return FALSE;
         g_assert_false(gtk_widget_is_sensitive(find(workspace,GTK_TYPE_BUTTON,"review")));
+        phase=50; GtkListBoxRow *row=gtk_list_box_get_selected_row(GTK_LIST_BOX(list)); click_row(row); click_row(row);
+    }
+    else if (phase==50)
+    {
+        if (!modal) return FALSE;
+        g_assert_true(g_str_has_prefix(gtk_window_get_title(GTK_WINDOW(modal)),"Resize "));
+        phase=51; gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_CANCEL);
+    }
+    else if (phase==51)
+    {
+        if (modal) return FALSE;
         phase=7; gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"format")));
     }
     else if (phase==7)
@@ -336,7 +355,31 @@ static gboolean step(gpointer data)
     else if (phase==19)
     {
         if (gtk_widget_get_allocated_width(styled(workspace,"disk-map"))!=map_width) return FALSE;
-        assert_icon_alignment();
+        assert_icon_alignment(); phase=60;
+        GtkWidget *map=styled(workspace,"disk-map"); double_click_map(map,gtk_widget_get_allocated_width(map)-20);
+    }
+    else if (phase==60)
+    {
+        if (!modal) return FALSE;
+        g_assert_cmpstr(gtk_window_get_title(GTK_WINDOW(modal)),==,"New partition");
+        phase=61; gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT);
+    }
+    else if (phase==61)
+    {
+        if (modal) return FALSE;
+        GtkWidget *map=styled(workspace,"disk-map"); phase=62; double_click_map(map,gtk_widget_get_allocated_width(map)-20);
+    }
+    else if (phase==62)
+    {
+        if (!modal) return FALSE;
+        g_assert_cmpstr(gtk_window_get_title(GTK_WINDOW(modal)),==,"Resize new partition");
+        phase=63; gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_CANCEL);
+    }
+    else if (phase==63)
+    {
+        if (modal) return FALSE;
+        gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"undo")));
+        g_assert_false(gtk_widget_is_sensitive(find(workspace,GTK_TYPE_BUTTON,"review")));
         gtk_main_quit(); return FALSE;
     }
     return FALSE;
@@ -355,6 +398,6 @@ int main(int argc, char **argv)
     Disk *after=engine_read(path,&error); g_assert_nonnull(after);
     g_assert_cmpstr(before->snapshot,==,after->snapshot);
     disk_free(before); disk_free(after);
-    g_print("PASS: native GTK selection and mouse releases, two-edge resize, movement, Review with explicit in-use acknowledgement, Adjust, Undo, current-size Grow, responsive window layout with fixed side panes, double-click table creation, and no disk writes.\n");
+    g_print("PASS: native GTK selection and mouse releases, two-edge resize, movement, Review with explicit in-use acknowledgement, Resize, Undo, current-size growth, responsive window layout with fixed side panes, map and row double-click actions, and no disk writes.\n");
     return 0;
 }
