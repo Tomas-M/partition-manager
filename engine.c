@@ -733,6 +733,16 @@ gboolean engine_apply(Disk *disk, const char *backup_root, GString *log, ApplyOp
         Filesystem *fs=find_filesystem(id);
         if (*part->format && (!fs || !fs->format_available)) result=fail(error, "The requested filesystem formatter is unavailable.");
         if (part->grow && (!fs || !fs->grow_available)) result=fail(error, "The requested filesystem grower is unavailable.");
+        /* Reject mounted or unhealthy NTFS before enlarging its partition on disk. */
+        if (result && part->grow && !strcmp(id,"ntfs"))
+        {
+            Partition *original=find_part(disk->base,part->origin); int part_fd=open_partition(disk,original,TRUE,error);
+            result=part_fd>=0 && verify_filesystem(original,part_fd,error);
+            const char *check[]={"ntfsresize","--info","/proc/self/fd/3",NULL};
+            if (result) result=command_run(check,NULL,part_fd,NULL,NULL,error);
+            if (part_fd>=0) close(part_fd);
+        }
+
     }
     char *backup=result?make_backup(disk, backup_root, fd, log, error):NULL;
     if (result && !backup) result=FALSE;

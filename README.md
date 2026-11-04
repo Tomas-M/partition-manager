@@ -95,6 +95,8 @@ on-disk table is retained and the application reports that a restart is
 required. A filesystem command is never redirected to a partition whose
 kernel boundaries differ from the intended extent.
 
+NTFS growth first runs a read-only readiness check on the original partition.
+A mounted or unhealthy NTFS volume is rejected before its partition is enlarged.
 Online ext growth skips offline e2fsck. XFS and Btrfs use their existing
 verified mount point, or a temporary mount if initially unmounted. Native
 filesystem tools can reject an operation they cannot perform. Explicitly

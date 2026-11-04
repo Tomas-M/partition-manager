@@ -220,6 +220,12 @@ static int integration(const char *path)
     g_assert_cmpuint(find_part(disk->parts,3)->fsbytes,==,384*1048576);
     g_assert_cmpuint(find_part(disk->parts,4)->fsbytes,==,384*1048576);
     g_assert_cmpuint(find_part(disk->parts,5)->fsbytes,>=,95*1048576);
+    /* ntfsresize schedules a Windows check; reject the next growth before changing geometry. */
+    find_part(disk->parts,5)->size=112*1048576/disk->sector; find_part(disk->parts,5)->grow=TRUE;
+    g_assert_false(engine_apply(disk,backup,log,&options,&error)); g_assert_nonnull(strstr(error->message,"scheduled for check")); g_clear_error(&error);
+    disk_free(disk); disk=engine_read(path,&error); part=disk->parts->pdata[0];
+    g_assert_cmpuint(find_part(disk->parts,5)->size,==,96*1048576/disk->sector);
+
     run(mount_argv); char *contents=NULL; g_assert_true(g_file_get_contents(marker,&contents,NULL,&error));
     g_assert_cmpstr(contents,==,"Data survives filesystem growth.\n"); g_free(contents);
     part->size=224*1048576/disk->sector;
