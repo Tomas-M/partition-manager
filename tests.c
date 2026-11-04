@@ -149,6 +149,27 @@ static void test_file_tables(void)
     g_free(directory); g_free(path); g_free(backup);
 }
 
+/* Replacing a whole-device filesystem must remove its signature for GPT and MBR. */
+static void test_new_table_signatures(void)
+{
+    GError *error=NULL; g_assert_true(engine_init(&error)); ApplyOptions options={0};
+    char *directory=g_dir_make_tmp("partitions-test-XXXXXX",&error), *path=g_build_filename(directory,"disk.img",NULL), *backup=g_build_filename(directory,"backups",NULL);
+    for (guint mode=0;mode<2;mode++)
+    {
+        int fd=open(path,O_CREAT|O_TRUNC|O_RDWR,0600); g_assert_cmpint(fd,>=,0); g_assert_cmpint(ftruncate(fd,128*1048576),==,0); close(fd);
+        const char *format[]={"mkfs.ext4","-F",path,NULL}; run(format);
+        Disk *disk=engine_read(path,&error); g_assert_nonnull(disk);
+        g_assert_true(engine_new_table(disk,mode?"dos":"gpt",&error)); GString *log=g_string_new(NULL);
+        if (!engine_apply(disk,backup,log,&options,&error)) g_error("%s\n%s",error->message,log->str);
+        const char *probe[]={"blkid","-p","-o","export",path,NULL}; char *output=NULL;
+        g_assert_true(command_run(probe,NULL,-1,&output,NULL,&error));
+        g_assert_nonnull(strstr(output,mode?"PTTYPE=dos":"PTTYPE=gpt")); g_assert_null(strstr(output,"TYPE=ext4"));
+        g_free(output); disk_free(disk); g_string_free(log,TRUE);
+    }
+    const char *remove[]={"rm","-rf","--",directory,NULL}; run(remove);
+    g_free(directory); g_free(path); g_free(backup);
+}
+
 /* Construct a new desired partition using only the current sfdisk catalogue. */
 static void add_partition(Disk *disk, guint number, guint start_mib, guint size_mib, const char *fs)
 {
@@ -252,5 +273,6 @@ int main(int argc, char **argv)
     g_test_add_func("/model/quoted-script",test_script);
     g_test_add_func("/model/device-icons",test_icons);
     g_test_add_func("/engine/file-tables-and-gpt-repair",test_file_tables);
+    g_test_add_func("/engine/new-table-removes-filesystem-signature",test_new_table_signatures);
     return g_test_run();
 }

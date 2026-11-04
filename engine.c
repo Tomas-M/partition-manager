@@ -84,7 +84,7 @@ static JsonParser *parse_json(const char *text, GError **error)
 /* Discover tools and optional inventory columns once, outside GTK callbacks. */
 gboolean engine_init(GError **error)
 {
-    const char *required[]={"sfdisk", "lsblk", "blkid", NULL};
+    const char *required[]={"sfdisk", "lsblk", "blkid", "wipefs", NULL};
     for (guint i=0; required[i]; i++)
     {
         char *path=g_find_program_in_path(required[i]);
@@ -291,8 +291,8 @@ Disk *engine_read(const char *path, GError **error)
         if (jn(object, "lastlba")) disk->last=jn(object, "lastlba");
         if (jn(object, "table-length")) disk->table_length=jn(object, "table-length");
         disk->unsupported=strcmp(disk->label, "gpt") && strcmp(disk->label, "dos");
-        JsonArray *parts=json_object_get_array_member(object, "partitions");
-        for (guint i=0; i<json_array_get_length(parts); i++)
+        JsonArray *parts=json_object_has_member(object,"partitions")?json_object_get_array_member(object,"partitions"):NULL;
+        for (guint i=0; parts && i<json_array_get_length(parts); i++)
         {
             JsonObject *entry=json_array_get_object_element(parts, i);
             Partition *part=partition_new();
@@ -638,6 +638,32 @@ static gboolean write_table(const char *script, int fd, gboolean busy, gboolean 
     g_free(output); return result;
 }
 
+/* A new table invalidates whole-device signatures; retain table boot code and partition contents. */
+static gboolean clear_device_signatures(int fd, const char *backup, GString *log, GError **error)
+{
+    const char *probe[]={"wipefs","--json","--output","TYPE,USAGE","/proc/self/fd/3",NULL}; char *output=NULL;
+    if (!command_run(probe,NULL,fd,&output,NULL,error)) { g_free(output); return FALSE; }
+    JsonParser *parser=parse_json(output,error); g_free(output);
+    if (!parser) return FALSE;
+    JsonArray *signatures=json_object_get_array_member(json_node_get_object(json_parser_get_root(parser)),"signatures");
+    GString *types=g_string_new(NULL);
+    for (guint i=0;i<json_array_get_length(signatures);i++)
+    {
+        JsonObject *entry=json_array_get_object_element(signatures,i);
+        if (strcmp(js(entry,"usage"),"partition-table")) g_string_append_printf(types,"%s%s",types->len?",":"",js(entry,"type"));
+    }
+    gboolean result=TRUE;
+    if (types->len)
+    {
+        char *save=g_strdup_printf("--backup=%s",backup);
+        const char *wipe[]={"wipefs","--all","--force","--lock=no",save,"--types",types->str,"/proc/self/fd/3",NULL};
+        output=NULL; result=command_run(wipe,NULL,fd,&output,NULL,error);
+        if (output) g_string_append(log,output);
+        g_free(output); g_free(save);
+    }
+    g_string_free(types,TRUE); g_object_unref(parser); return result;
+}
+
 /* Update individual kernel entries; mounted deletions can remain active until restart. */
 static void update_kernel(Disk *disk, int fd, ApplyOptions *options, GString *log)
 {
@@ -714,6 +740,7 @@ gboolean engine_apply(Disk *disk, const char *backup_root, GString *log, ApplyOp
     {
         char *script=disk_script(disk);
         result=write_table(script,fd,active,TRUE,log,error);
+        if (result && disk->new_table) result=clear_device_signatures(fd,backup,log,error);
         if (result) result=write_table(script,fd,active,FALSE,log,error);
         g_free(script);
         if (result && fsync(fd)<0) result=fail(error, "The partition table could not be flushed to the device.");

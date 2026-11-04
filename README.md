@@ -111,6 +111,9 @@ match the parent disk, kernel start and size, and original filesystem UUID.
 
 Table backups are saved in `$XDG_STATE_HOME/partition-manager/backups` (normally
 `~/.local/state/partition-manager/backups`). They preserve metadata, not file data.
+Creating a new table removes obsolete whole-device filesystem, RAID and encryption
+signatures with `wipefs`, saving their signature backups alongside the table backup.
+Ordinary table edits preserve signatures, and table boot code is retained.
 The generated script is checked with `sfdisk --no-act`; the written table is
 then reread and checked before formatting or growth. Existing table IDs,
 partition UUIDs, GPT attributes and MBR boot flags are preserved. Failures
