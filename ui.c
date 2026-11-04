@@ -40,6 +40,7 @@ static void action(GtkButton *button, gpointer data);
 static void activate_selection(App *app);
 static const double colors[][3]={{233/255.,215/255.,174/255.},{195/255.,213/255.,232/255.},{212/255.,204/255.,232/255.},{186/255.,219/255.,197/255.}};
 static const double text_colors[][3]={{114/255.,89/255.,31/255.},{63/255.,92/255.,123/255.},{100/255.,82/255.,130/255.},{55/255.,99/255.,71/255.}};
+static const double editor_inset=12;
 
 /* Widgets use local CSS classes instead of altering the user's GTK theme. */
 static void style(GtkWidget *widget, const char *name)
@@ -562,13 +563,22 @@ static void editor_update(Editor *editor)
     gtk_widget_queue_draw(editor->area);
 }
 
+/* Keep complete handles and minimum-width selections inside the drawing area. */
+static void editor_bounds(GtkWidget *widget, Editor *editor, double *left, double *right)
+{
+    double width=gtk_widget_get_allocated_width(widget)-2*editor_inset;
+    double size=MAX(16,editor->size/(double)editor->total*width);
+    *left=editor_inset+MIN(editor->offset/(double)editor->total*width,width-size);
+    *right=*left+size;
+}
+
 /* Render one interval with two resize handles and a movable centre for new data. */
 static gboolean editor_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 {
-    Editor *editor=data; double width=gtk_widget_get_allocated_width(widget)-16;
-    double x=8+editor->offset/(double)editor->total*width, size=MAX(16,editor->size/(double)editor->total*width);
-    rounded(cr,8,.5,width,103,7); hatch(cr,8,0,width,104);
-    rounded(cr,8,.5,width,103,7); cairo_set_source_rgb(cr,205/255.,217/255.,194/255.); cairo_set_line_width(cr,1); cairo_stroke(cr);
+    Editor *editor=data; double width=gtk_widget_get_allocated_width(widget)-2*editor_inset, x,right;
+    editor_bounds(widget,editor,&x,&right); double size=right-x;
+    rounded(cr,editor_inset,.5,width,103,7); hatch(cr,editor_inset,0,width,104);
+    rounded(cr,editor_inset,.5,width,103,7); cairo_set_source_rgb(cr,205/255.,217/255.,194/255.); cairo_set_line_width(cr,1); cairo_stroke(cr);
     rounded(cr,x,.5,size,103,6); cairo_set_source_rgb(cr,184/255.,215/255.,188/255.); cairo_fill_preserve(cr);
     cairo_set_source_rgb(cr,103/255.,149/255.,109/255.); cairo_stroke(cr);
     for (int edge=0;edge<2;edge++)
@@ -596,8 +606,7 @@ static gboolean editor_press(GtkWidget *widget, GdkEventButton *event, gpointer 
 {
     Editor *editor=data;
     if (event->button!=1) return FALSE;
-    double width=gtk_widget_get_allocated_width(widget)-16;
-    double left=8+editor->offset/(double)editor->total*width, right=left+editor->size/(double)editor->total*width;
+    double left,right; editor_bounds(widget,editor,&left,&right);
     editor->drag=0;
     if (fabs(event->x-right)<13) editor->drag=2;
     else if (editor->mode!=GROW && fabs(event->x-left)<13) editor->drag=1;
@@ -609,7 +618,7 @@ static gboolean editor_press(GtkWidget *widget, GdkEventButton *event, gpointer 
 /* Snap drawn boundaries to MiB intervals while preserving each allowed extent. */
 static gboolean editor_motion(GtkWidget *widget, GdkEventMotion *event, gpointer data)
 {
-    Editor *editor=data; double width=gtk_widget_get_allocated_width(widget)-16;
+    Editor *editor=data; double width=gtk_widget_get_allocated_width(widget)-2*editor_inset;
     Disk *disk=editor->app->disks->pdata[editor->app->active]; guint64 grain=1048576/disk->sector;
     if (editor->drag && (event->state&GDK_BUTTON1_MASK))
     {
@@ -620,7 +629,7 @@ static gboolean editor_motion(GtkWidget *widget, GdkEventMotion *event, gpointer
         if (editor->drag==3) offset=CLAMP(offset+delta,0,(gint64)editor->total-size);
         editor->offset=offset; editor->size=size; editor_update(editor);
     }
-    double left=8+editor->offset/(double)editor->total*width, right=left+editor->size/(double)editor->total*width;
+    double left,right; editor_bounds(widget,editor,&left,&right);
     const char *cursor="default";
     if (fabs(event->x-right)<13 || (editor->mode!=GROW && fabs(event->x-left)<13)) cursor="ew-resize";
     else if (editor->mode!=GROW && event->x>left && event->x<right) cursor="grab";
