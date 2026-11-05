@@ -666,7 +666,7 @@ static void editor_all(GtkButton *button, gpointer data)
 /* Offer only the supported formatters actually present on this system. */
 static GtkWidget *filesystem_combo(const char *current, gboolean empty)
 {
-    GtkWidget *combo=gtk_combo_box_text_new(); style(combo,"filesystem-selector");
+    GtkWidget *combo=gtk_combo_box_text_new();
     if (empty) gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo),"","Leave unformatted");
     for (guint i=0; i<filesystem_count; i++)
         if (filesystems[i].format_available) gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo),filesystems[i].id,filesystems[i].name);
