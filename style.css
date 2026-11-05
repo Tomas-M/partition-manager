@@ -73,6 +73,8 @@
 .partitions-dialog .field-label { margin-bottom:7px; color:#6b7863; font-size:13px; font-weight:500; }
 .partitions-dialog .field-next { margin-top:18px; }
 .partitions-dialog entry,.partitions-dialog combobox button { min-height:19px; padding:7px 10px; border:1px solid #cfd6ca; border-radius:4px; background:#fff; box-shadow:inset 0 1px 2px alpha(#263322,.02); font-size:14px; }
+/* Size the filesystem popup as a list instead of an item-aligned scrolling menu. */
+.partitions-dialog combobox.filesystem-selector { -GtkComboBox-appears-as-list:true; }
 .partitions-dialog .form-hint { margin-top:15px; color:#859078; font-size:13px; }
 .partitions-dialog .growth-result { margin-top:22px; padding:15px; border-radius:5px; background:#eef5e8; color:#5a7d4a; font-size:14px; }
 .partitions-dialog .growth-note { font-size:13px; color:#819173; }
