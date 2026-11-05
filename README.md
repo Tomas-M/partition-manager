@@ -6,7 +6,9 @@ utilities for formatting and growth. It does not link libparted or implement
 an on-disk partition-table writer. The application has no Python, browser or
 WebView dependency.
 
-![Partition Manager showing a Windows disk layout, a USB drive and a virtual disk](screenshots/partition-manager.png)
+<a href="screenshots/partition-manager.png">
+  <img src="screenshots/partition-manager.png" width="800" alt="Partition Manager showing a Windows disk layout, a USB drive and a virtual disk">
+</a>
 
 An example Windows disk layout with EFI, System and Data partitions.
 
