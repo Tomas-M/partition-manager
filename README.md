@@ -6,6 +6,10 @@ utilities for formatting and growth. It does not link libparted or implement
 an on-disk partition-table writer. The application has no Python, browser or
 WebView dependency.
 
+![Partition Manager showing a Windows disk layout, a USB drive and a virtual disk](screenshots/partition-manager.png)
+
+An example Windows disk layout with EFI, System and Data partitions.
+
 ## Build and run
 
 On Debian 13, install `build-essential`, `pkg-config`, `libgtk-3-dev` and
