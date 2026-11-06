@@ -89,6 +89,14 @@ static gboolean cancel_review(gpointer data)
     gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_CANCEL); return G_SOURCE_REMOVE;
 }
 
+/* Short review plans stay fully visible when the disk-use status changes. */
+static void assert_review_plan(GtkWidget *modal)
+{
+    GtkWidget *scroll=find(modal,GTK_TYPE_SCROLLED_WINDOW,NULL);
+    GtkAdjustment *vertical=gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll));
+    g_assert_cmpfloat(gtk_adjustment_get_upper(vertical),<=,gtk_adjustment_get_page_size(vertical)+1);
+}
+
 /* Save real GTK rendering to a temporary QA artifact. */
 static void capture(GtkWidget *widget, const char *path)
 {
@@ -158,6 +166,8 @@ static gboolean step(gpointer data)
         if (phase==0)
         {
             GtkWidget *map=styled(workspace,"disk-map"); gboolean handled=FALSE;
+            /* A completed scan can precede the next GTK allocation. */
+            if (gtk_widget_get_allocated_width(map)<100) return FALSE;
             GdkEventButton event={.type=GDK_2BUTTON_PRESS,.button=1,.x=gtk_widget_get_allocated_width(map)/2,.y=30};
             phase=1; g_signal_emit_by_name(map,"button-press-event",&event,&handled); g_assert_true(handled);
         }
@@ -217,6 +227,7 @@ static gboolean step(gpointer data)
         g_assert_cmpstr(gtk_window_get_title(GTK_WINDOW(modal)),==,"Review changes");
         GtkWidget *apply=gtk_dialog_get_widget_for_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT), *checkbox=find(modal,GTK_TYPE_CHECK_BUTTON,NULL);
         g_assert_true(gtk_widget_get_visible(checkbox)); g_assert_false(gtk_widget_is_sensitive(apply));
+        assert_review_plan(modal);
         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(checkbox),TRUE); g_assert_true(gtk_widget_is_sensitive(apply));
         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(checkbox),FALSE); g_assert_false(gtk_widget_is_sensitive(apply));
         held_mount=open(fixture_mount,O_RDONLY); g_assert_cmpint(held_mount,>=,0);
@@ -235,6 +246,7 @@ static gboolean step(gpointer data)
     {
         if (gtk_widget_get_visible(find(modal,GTK_TYPE_SPINNER,NULL))) return FALSE;
         g_assert_nonnull(styled(modal,"disk-ready"));
+        assert_review_plan(modal);
         g_assert_false(gtk_widget_get_visible(find(modal,GTK_TYPE_CHECK_BUTTON,NULL)));
         g_assert_true(gtk_widget_is_sensitive(gtk_dialog_get_widget_for_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT)));
         GError *error=NULL; Disk *live=engine_read(fixture_path,&error); g_assert_nonnull(live); g_assert_false(live->busy); disk_free(live);

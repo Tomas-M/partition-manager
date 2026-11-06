@@ -159,7 +159,8 @@ static void message(App *app, const char *title, const char *text, const char *d
         gtk_text_view_set_editable(GTK_TEXT_VIEW(view), FALSE);
         gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(view),FALSE);
         gtk_text_view_set_monospace(GTK_TEXT_VIEW(view), TRUE);
-        gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(view), GTK_WRAP_WORD_CHAR);
+        gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(view), GTK_WRAP_NONE);
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),GTK_POLICY_AUTOMATIC,GTK_POLICY_AUTOMATIC);
         gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(view)), details, -1);
         gtk_container_add(GTK_CONTAINER(scroll), view);
         gtk_widget_set_size_request(scroll, 580, 210); style(scroll,"log-view");
@@ -810,7 +811,7 @@ static void acknowledge_busy(GtkToggleButton *checkbox, gpointer data)
 typedef struct
 {
     App *app;
-    GtkWidget *dialog, *apply, *status, *ack, *unmount, *spinner;
+    GtkWidget *dialog, *apply, *status, *feedback, *scroll, *plan, *ack, *unmount, *spinner;
     gboolean ready, busy;
 } Review;
 
@@ -827,6 +828,28 @@ static void update_usage(Disk *disk, Disk *current)
             Partition *live=find_part(current->parts,part->origin); if (!live) continue;
             part->busy=live->busy; g_free(part->mount); part->mount=g_strdup(live->mount);
         }
+}
+
+/* Fit the plan's natural height before scrolling, leaving room for all review controls. */
+static void review_size(Review *review)
+{
+    int width=680, content_height, header_height, plan_height, scroll_height;
+    if (gtk_widget_get_mapped(review->dialog)) gtk_window_get_size(GTK_WINDOW(review->dialog),&width,NULL);
+    GdkRectangle work;
+    GdkMonitor *monitor=gdk_display_get_monitor_at_window(gtk_widget_get_display(review->app->window),gtk_widget_get_window(review->app->window));
+    gdk_monitor_get_workarea(monitor,&work);
+    GtkScrolledWindow *scroll=GTK_SCROLLED_WINDOW(review->scroll);
+    gtk_scrolled_window_set_min_content_height(scroll,0); gtk_scrolled_window_set_max_content_height(scroll,0);
+    gtk_widget_get_preferred_height_for_width(gtk_bin_get_child(GTK_BIN(review->dialog)),width,NULL,&content_height);
+    gtk_widget_get_preferred_height_for_width(gtk_window_get_titlebar(GTK_WINDOW(review->dialog)),width,NULL,&header_height);
+    GtkWidget *body=g_object_get_data(G_OBJECT(review->dialog),"body");
+    int plan_width=MAX(1,width-2*gtk_container_get_border_width(GTK_CONTAINER(body)));
+    gtk_widget_get_preferred_height_for_width(review->scroll,plan_width,NULL,&scroll_height);
+    content_height-=scroll_height;
+    gtk_widget_get_preferred_height_for_width(review->plan,plan_width,NULL,&plan_height);
+    plan_height=MIN(plan_height,MAX(1,work.height-48-header_height-content_height));
+    gtk_scrolled_window_set_max_content_height(scroll,plan_height); gtk_scrolled_window_set_min_content_height(scroll,plan_height);
+    gtk_window_resize(GTK_WINDOW(review->dialog),width,content_height+plan_height);
 }
 
 /* Only a completed fresh check can enable applying or acknowledge remaining use. */
@@ -847,9 +870,9 @@ static void review_done(GObject *source, GAsyncResult *result, gpointer data)
     render(app,TRUE);
     if (review->dialog)
     {
-        GtkStyleContext *context=gtk_widget_get_style_context(review->status);
-        gtk_style_context_remove_class(context,"in-use-warning"); gtk_style_context_remove_class(context,"disk-ready");
-        style(review->status,error || review->busy?"in-use-warning":"disk-ready");
+        GtkStyleContext *context=gtk_widget_get_style_context(review->feedback);
+        gtk_style_context_remove_class(context,"disk-checking");
+        style(review->feedback,error || review->busy?"in-use-warning":"disk-ready");
         const char *text="Disk is ready. No mounted filesystems or other active uses were detected.";
         if (review->busy) text="This disk is in use. Changes affecting mounted filesystems can destroy data or stop the running system. Nothing will be unmounted automatically. Some changes may require a restart.";
         char *detail=g_strdup_printf("%s%s%s",error?error->message:text,job->log->len?"\n\n":"",job->log->str);
@@ -859,7 +882,7 @@ static void review_done(GObject *source, GAsyncResult *result, gpointer data)
         gtk_button_set_label(GTK_BUTTON(review->unmount),error?"Check again":"Unmount partitions");
         gtk_widget_set_visible(review->unmount,error || (mounted && !app->readonly)); gtk_widget_set_sensitive(review->unmount,TRUE);
         gtk_widget_set_sensitive(review->apply,review->ready && !review->busy && !app->readonly);
-        int width; gtk_window_get_size(GTK_WINDOW(review->dialog),&width,NULL); gtk_window_resize(GTK_WINDOW(review->dialog),width,1);
+        review_size(review);
     }
     if (disks) g_ptr_array_unref(disks);
     g_clear_error(&error);
@@ -879,7 +902,10 @@ static void review_check(GtkButton *button, gpointer data)
     gtk_widget_set_sensitive(review->apply,FALSE); gtk_widget_set_sensitive(review->unmount,FALSE);
     if (!button) gtk_widget_hide(review->unmount);
     gtk_label_set_text(GTK_LABEL(review->status),job->type==UNMOUNT?"Unmounting partitions safely…":"Checking disk use…");
+    GtkStyleContext *context=gtk_widget_get_style_context(review->feedback);
+    gtk_style_context_remove_class(context,"in-use-warning"); gtk_style_context_remove_class(context,"disk-ready"); style(review->feedback,"disk-checking");
     gtk_widget_show(review->spinner); gtk_spinner_start(GTK_SPINNER(review->spinner));
+    review_size(review);
     GTask *task=g_task_new(review->dialog,NULL,review_done,NULL); g_task_set_task_data(task,job,job_free);
     g_task_run_in_thread(task,worker); g_object_unref(task);
 }
@@ -892,29 +918,34 @@ static void review(App *app)
     g_object_set_data(G_OBJECT(apply),"read-only",GINT_TO_POINTER(app->readonly)); gtk_widget_set_sensitive(apply,!app->readonly);
     GtkWidget *scroll=gtk_scrolled_window_new(NULL,NULL), *box=gtk_box_new(GTK_ORIENTATION_VERTICAL,16);
     gtk_container_add(GTK_CONTAINER(scroll),box); gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
-    gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(scroll),TRUE); gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(scroll),320);
+    gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(scroll),TRUE);
+    gtk_box_set_spacing(GTK_BOX(body),16);
     gtk_box_pack_start(GTK_BOX(body),scroll,TRUE,TRUE,0);
     for (guint i=0; i<app->disks->len; i++)
     {
         Disk *disk=app->disks->pdata[i]; if (!disk_changed(disk)) continue;
         char *title=g_strdup_printf("%s — %s",disk->title,disk->path), *plan=plan_description(disk);
         gtk_box_pack_start(GTK_BOX(box),label(title,"row-name"),FALSE,FALSE,0);
-        GtkWidget *text=label(plan,NULL); gtk_label_set_line_wrap(GTK_LABEL(text),TRUE); gtk_label_set_selectable(GTK_LABEL(text),TRUE);
+        GtkWidget *text=label(g_strchomp(plan),NULL); gtk_label_set_line_wrap(GTK_LABEL(text),TRUE); gtk_label_set_selectable(GTK_LABEL(text),TRUE);
         gtk_box_pack_start(GTK_BOX(box),text,FALSE,FALSE,0); g_free(title); g_free(plan);
     }
-    Review *review=g_new0(Review,1); review->app=app; review->dialog=dialog; review->apply=apply;
+    Review *review=g_new0(Review,1); review->app=app; review->dialog=dialog; review->apply=apply; review->scroll=scroll; review->plan=box;
     g_object_set_data_full(G_OBJECT(dialog),"review",review,g_free);
     g_signal_connect_swapped(dialog,"destroy",G_CALLBACK(g_nullify_pointer),&review->dialog);
     review->status=label("",NULL); gtk_label_set_line_wrap(GTK_LABEL(review->status),TRUE); gtk_label_set_max_width_chars(GTK_LABEL(review->status),70);
-    gtk_box_pack_start(GTK_BOX(body),review->status,FALSE,FALSE,16);
-    GtkWidget *controls=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,12);
+    review->feedback=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,12); gtk_box_pack_start(GTK_BOX(body),review->feedback,FALSE,FALSE,0);
+    gtk_widget_set_hexpand(review->status,TRUE);
     review->unmount=gtk_button_new_with_label("Unmount partitions"); g_object_set_data(G_OBJECT(review->unmount),"action","unmount");
-    review->spinner=gtk_spinner_new(); gtk_box_pack_start(GTK_BOX(controls),review->spinner,FALSE,FALSE,0);
-    gtk_box_pack_start(GTK_BOX(controls),review->unmount,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(body),controls,FALSE,FALSE,0);
+    review->spinner=gtk_spinner_new(); gtk_widget_set_size_request(review->spinner,16,16); gtk_widget_set_valign(review->spinner,GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(review->feedback),review->spinner,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(review->feedback),review->status,TRUE,TRUE,0);
+    gtk_widget_set_halign(review->unmount,GTK_ALIGN_START); gtk_box_pack_start(GTK_BOX(body),review->unmount,FALSE,FALSE,0);
     g_signal_connect(review->unmount,"clicked",G_CALLBACK(review_check),review);
     review->ack=gtk_check_button_new_with_label("I accept the risk of changing disks that are in use.");
     g_signal_connect(review->ack,"toggled",G_CALLBACK(acknowledge_busy),apply); gtk_box_pack_start(GTK_BOX(body),review->ack,FALSE,FALSE,0);
-    gtk_widget_show_all(dialog); review_check(NULL,review);
+    gtk_widget_show_all(gtk_bin_get_child(GTK_BIN(dialog))); gtk_widget_realize(dialog);
+    review_check(NULL,review);
+    /* Keep the plan at its beginning rather than scrolling a selectable label into focus. */
+    gtk_widget_grab_focus(gtk_dialog_get_widget_for_response(GTK_DIALOG(dialog),GTK_RESPONSE_CANCEL));
     int response=gtk_dialog_run(GTK_DIALOG(dialog));
     gboolean accepted=response==GTK_RESPONSE_ACCEPT && review->ready && !app->working && !app->readonly;
     gboolean busy=review->busy;
