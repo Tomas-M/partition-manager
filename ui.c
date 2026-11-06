@@ -596,8 +596,8 @@ static gboolean editor_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
         GdkPixbuf *glyph=g_object_get_data(G_OBJECT(widget),"glyph");
         cairo_push_group(cr); gdk_cairo_set_source_pixbuf(cr,glyph,x+(size-17)/2,29); cairo_paint(cr); cairo_pattern_t *mask=cairo_pop_group(cr);
         cairo_set_source_rgb(cr,60/255.,111/255.,67/255.); cairo_mask(cr,mask); cairo_pattern_destroy(mask);
-        Partition *part=selected_part(editor->app); const char *name=part && *part->name?part->name:"New partition";
-        PangoLayout *layout=gtk_widget_create_pango_layout(widget,name); pango_layout_set_width(layout,(size-32)*PANGO_SCALE); pango_layout_set_alignment(layout,PANGO_ALIGN_CENTER); pango_layout_set_ellipsize(layout,PANGO_ELLIPSIZE_END);
+        Partition *part=selected_part(editor->app); char *name=part?part_title(part):g_strdup("New partition");
+        PangoLayout *layout=gtk_widget_create_pango_layout(widget,name); g_free(name); pango_layout_set_width(layout,(size-32)*PANGO_SCALE); pango_layout_set_alignment(layout,PANGO_ALIGN_CENTER); pango_layout_set_ellipsize(layout,PANGO_ELLIPSIZE_END);
         cairo_move_to(cr,x+16,54); pango_cairo_show_layout(cr,layout); g_object_unref(layout);
     }
     return FALSE;
