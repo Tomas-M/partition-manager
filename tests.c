@@ -112,10 +112,22 @@ static void run(const char *const *argv)
     if (!command_run(argv,NULL,-1,NULL,NULL,&error)) g_error("%s",error->message);
 }
 
+typedef struct { guint completed, total, calls; gboolean finished; } Progress;
+
+/* A failed or partial operation must never report complete or move progress backwards. */
+static void record_progress(const char *step, guint completed, guint total, gpointer data)
+{
+    Progress *progress=data;
+    if (!completed) *progress=(Progress){.total=total};
+    g_assert_nonnull(step); g_assert_cmpuint(total,>,0); g_assert_cmpuint(total,==,progress->total);
+    g_assert_cmpuint(completed,>=,progress->completed); g_assert_cmpuint(completed,<=,total);
+    progress->completed=completed; progress->finished=completed==total; progress->calls++;
+}
+
 /* A fully owned sparse file exercises actual sfdisk script parsing and readback. */
 static void test_file_tables(void)
 {
-    ApplyOptions options={0};
+    Progress progress={0}; ApplyOptions options={.progress=record_progress,.progress_data=&progress};
     GError *error=NULL; g_assert_true(engine_init(&error));
     char *directory=g_dir_make_tmp("partitions-test-XXXXXX",&error), *path=g_build_filename(directory,"disk.img",NULL), *backup=g_build_filename(directory,"backups",NULL);
     int fd=open(path,O_CREAT|O_RDWR,0600); g_assert_cmpint(fd,>=,0); g_assert_cmpint(ftruncate(fd,128*1048576),==,0); close(fd);
@@ -131,6 +143,7 @@ static void test_file_tables(void)
         fd=open(path,O_RDWR); g_assert_cmpint(pwrite(fd,boot,sizeof boot,0),==,sizeof boot); close(fd);
         g_ptr_array_add(disk->parts,part); GString *log=g_string_new(NULL);
         if (!engine_apply(disk,backup,log,&options,&error)) g_error("%s\n%s",error->message,log->str);
+        g_assert_true(progress.finished); g_assert_cmpuint(progress.calls,>=,5);
         disk_free(disk); disk=engine_read(path,&error); g_assert_nonnull(disk);
         g_assert_cmpuint(disk->parts->len,==,1); g_assert_cmpuint(((Partition *)disk->parts->pdata[0])->number,==,1);
         g_assert_cmpuint(((Partition *)disk->parts->pdata[0])->size,==,32768);
@@ -183,7 +196,7 @@ static void add_partition(Disk *disk, guint number, guint start_mib, guint size_
 /* Integration writes are allowed only to a loop backed by this test's /tmp file. */
 static int integration(const char *path)
 {
-    ApplyOptions options={0};
+    Progress progress={0}; ApplyOptions options={.progress=record_progress,.progress_data=&progress};
     g_assert_true(g_str_has_prefix(path,"/dev/loop"));
     char *sys=g_strdup_printf("/sys/class/block/%s/loop/backing_file",strrchr(path,'/')+1), *backing=NULL;
     g_assert_true(g_file_get_contents(sys,&backing,NULL,NULL));
@@ -202,6 +215,7 @@ static int integration(const char *path)
     add_partition(disk,5,1664,64,"ntfs"); add_partition(disk,6,1800,128,"exfat");
     GString *log=g_string_new(NULL); char *backup=g_dir_make_tmp("partitions-test-backups-XXXXXX",&error);
     if (!engine_apply(disk,backup,log,&options,&error)) g_error("Initial format: %s\n%s",error->message,log->str);
+    g_assert_true(progress.finished); g_assert_cmpuint(progress.calls,>=,11);
     disk_free(disk); disk=engine_read(path,&error);
     g_assert_cmpstr(((Partition *)disk->parts->pdata[0])->fs,==,"ext4");
     g_assert_cmpstr(((Partition *)disk->parts->pdata[1])->fs,==,"vfat");
@@ -250,7 +264,7 @@ static int integration(const char *path)
     usage=engine_recheck(disk,&error); g_assert_nonnull(usage); g_assert_false(usage->busy);
     g_assert_cmpstr(disk->snapshot,==,usage->snapshot); g_assert_cmpuint(part->size,==,224*1048576/disk->sector); disk_free(usage);
     int lock=open(path,O_RDWR); g_assert_cmpint(flock(lock,LOCK_EX),==,0);
-    g_assert_false(engine_apply(disk,backup,log,&options,&error)); g_assert_nonnull(strstr(error->message,"Another program")); g_clear_error(&error); close(lock);
+    g_assert_false(engine_apply(disk,backup,log,&options,&error)); g_assert_nonnull(strstr(error->message,"Another program")); g_assert_false(progress.finished); g_clear_error(&error); close(lock);
     const char *rename[]={"sfdisk","--part-label",path,"1","Externally changed",NULL}; run(rename);
     g_assert_false(engine_apply(disk,backup,log,&options,&error)); g_assert_nonnull(strstr(error->message,"changed")); g_clear_error(&error);
     disk_free(disk); disk=engine_read(path,&error);
@@ -291,11 +305,16 @@ static void test_whole_fat_filesystem(void)
     GError *error=NULL; g_assert_true(engine_init(&error));
     char *directory=g_dir_make_tmp("partitions-test-fat-XXXXXX",&error), *path=g_build_filename(directory,"disk.img",NULL);
     int fd=open(path,O_CREAT|O_RDWR,0600); g_assert_cmpint(fd,>=,0); g_assert_cmpint(ftruncate(fd,128*1048576),==,0); close(fd);
-    const char *format[]={"mkfs.fat","-F","32",path,NULL}; run(format);
+    const char *format[]={"mkfs.fat","-F","32","-n","NEW VOLUME",path,NULL}; run(format);
     Disk *disk=engine_read(path,&error); g_assert_nonnull(disk);
     g_assert_cmpstr(disk->label,==,""); g_assert_cmpuint(disk->parts->len,==,1);
     Partition *whole=disk->parts->pdata[0]; g_assert_cmpuint(whole->number,==,0);
     g_assert_cmpstr(whole->fs,==,"vfat"); g_assert_cmpuint(whole->size,==,disk->bytes/disk->sector);
+    g_assert_cmpstr(whole->fslabel,==,"NEW VOLUME"); g_assert_cmpstr(whole->name,==,"NEW VOLUME");
+    disk_free(disk); fd=open(path,O_TRUNC|O_RDWR); g_assert_cmpint(fd,>=,0); g_assert_cmpint(ftruncate(fd,128*1048576),==,0); close(fd);
+    const char *label="数据 \\Disk", *ext4[]={"mkfs.ext4","-F","-L",label,path,NULL}; run(ext4);
+    disk=engine_read(path,&error); g_assert_nonnull(disk); whole=disk->parts->pdata[0];
+    g_assert_cmpstr(whole->fslabel,==,label); g_assert_cmpstr(whole->name,==,label);
     disk_free(disk); g_assert_cmpint(unlink(path),==,0); g_assert_cmpint(rmdir(directory),==,0); g_free(path); g_free(directory);
 }
 

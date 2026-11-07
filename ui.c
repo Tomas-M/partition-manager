@@ -1,5 +1,7 @@
 #include "partition-manager.h"
 #include <gtk/gtk.h>
+#include <glib-unix.h>
+#include <libudev.h>
 #include <math.h>
 #include <string.h>
 #include <unistd.h>
@@ -8,8 +10,11 @@ typedef struct
 {
     GtkWidget *window, *sidebar, *heading, *subtitle, *notice, *map, *rows, *details;
     GtkWidget *body, *content, *status, *spinner, *undo, *review, *create, *edit, *resize, *format, *remove;
-    GtkWidget *header_device, *header_icon, *allocated, *available, *row_scroll, *status_icon;
+    GtkWidget *progress, *header_device, *header_icon, *allocated, *available, *row_scroll, *status_icon;
     GtkSizeGroup *size_group;
+    struct udev_monitor *monitor;
+    GHashTable *device_events;
+    guint monitor_source, device_idle;
     GPtrArray *disks, *history;
     guint active;
     gint selected;
@@ -20,7 +25,7 @@ typedef struct
 typedef struct { guint disk; Disk *before; } Undo;
 typedef struct { guint64 start, size; gint number; } Item;
 typedef struct { Item item; double x, width; } Tile;
-typedef enum { SCAN, APPLY, CHECK, USAGE, UNMOUNT } JobType;
+typedef enum { SCAN, APPLY, CHECK, USAGE, UNMOUNT, DISCOVER } JobType;
 typedef struct { GPtrArray *plans; char *backup, *only; GString *log; JobType type; ApplyOptions options; gboolean include_loop; } Job;
 typedef enum { CREATE, ADJUST, GROW, FORMAT, RENAME } EditMode;
 typedef struct
@@ -37,6 +42,8 @@ typedef struct
 static void render(App *app, gboolean rebuild_rows);
 static void start_job(App *app, JobType type, gboolean allow_busy);
 static void action(GtkButton *button, gpointer data);
+static void launch_job(App *app, Job *job);
+static void schedule_devices(App *app);
 static void activate_selection(App *app);
 static void job_free(gpointer data);
 static void worker(GTask *task, gpointer source, gpointer data, GCancellable *cancel);
@@ -112,7 +119,8 @@ static GtkWidget *table_columns(GtkWidget *name, GtkWidget *filesystem)
 /* Use one native CSD header and footer treatment for the mockup's focused dialogs. */
 static GtkWidget *make_dialog(App *app, const char *title, int width, const char *accept)
 {
-    GtkWidget *dialog=gtk_dialog_new_with_buttons(title,GTK_WINDOW(app->window),GTK_DIALOG_MODAL|GTK_DIALOG_DESTROY_WITH_PARENT,"Cancel",GTK_RESPONSE_CANCEL,accept,GTK_RESPONSE_ACCEPT,NULL);
+    GtkWidget *dialog=gtk_dialog_new_with_buttons(title,GTK_WINDOW(app->window),GTK_DIALOG_MODAL|GTK_DIALOG_DESTROY_WITH_PARENT,accept,GTK_RESPONSE_ACCEPT,NULL);
+    g_signal_connect_swapped(dialog,"destroy",G_CALLBACK(schedule_devices),app);
     style(dialog,"partitions-dialog"); gtk_window_set_default_size(GTK_WINDOW(dialog),width,-1);
     GtkWidget *header=gtk_header_bar_new(); gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(header),TRUE);
     gtk_header_bar_set_decoration_layout(GTK_HEADER_BAR(header),":close");
@@ -122,10 +130,15 @@ static GtkWidget *make_dialog(App *app, const char *title, int width, const char
     GtkWidget *content=gtk_dialog_get_content_area(GTK_DIALOG(dialog)); gtk_box_set_spacing(GTK_BOX(content),0); gtk_container_set_border_width(GTK_CONTAINER(content),0);
     GtkWidget *body=gtk_box_new(GTK_ORIENTATION_VERTICAL,0); gtk_container_set_border_width(GTK_CONTAINER(body),23);
     gtk_box_pack_start(GTK_BOX(content),body,TRUE,TRUE,0); g_object_set_data(G_OBJECT(dialog),"body",body);
-    GtkWidget *footer=gtk_dialog_get_action_area(GTK_DIALOG(dialog)); style(footer,"modal-footer");
-    gtk_button_box_set_child_non_homogeneous(GTK_BUTTON_BOX(footer),gtk_dialog_get_widget_for_response(GTK_DIALOG(dialog),GTK_RESPONSE_CANCEL),TRUE);
-    gtk_button_box_set_child_non_homogeneous(GTK_BUTTON_BOX(footer),gtk_dialog_get_widget_for_response(GTK_DIALOG(dialog),GTK_RESPONSE_ACCEPT),TRUE);
-    GtkWidget *apply=gtk_dialog_get_widget_for_response(GTK_DIALOG(dialog),GTK_RESPONSE_ACCEPT); style(apply,"suggested-action");
+    GtkWidget *footer=gtk_dialog_get_action_area(GTK_DIALOG(dialog)); style(footer,"modal-footer"); gtk_button_box_set_layout(GTK_BUTTON_BOX(footer),GTK_BUTTONBOX_END);
+    if (accept)
+    {
+        GtkWidget *cancel=gtk_dialog_add_button(GTK_DIALOG(dialog),"Cancel",GTK_RESPONSE_CANCEL);
+        GtkWidget *apply=gtk_dialog_get_widget_for_response(GTK_DIALOG(dialog),GTK_RESPONSE_ACCEPT); style(apply,"suggested-action");
+        gtk_button_box_set_child_non_homogeneous(GTK_BUTTON_BOX(footer),cancel,TRUE);
+        gtk_button_box_set_child_non_homogeneous(GTK_BUTTON_BOX(footer),apply,TRUE);
+    }
+    else { gtk_widget_hide(footer); gtk_widget_set_no_show_all(footer,TRUE); }
     return dialog;
 }
 
@@ -406,29 +419,32 @@ static void disk_selected(GtkListBox *box, GtkListBoxRow *row, gpointer data)
     app->active=index; app->selected=-1; app->free_start=0; render(app,TRUE);
 }
 
-/* Build a compact sidebar row with its inventory-derived device icon. */
+/* Build stable sidebar rows so hotplug never replaces rows for existing disks. */
+static GtkWidget *device_row(Disk *disk, guint index)
+{
+    GtkWidget *row=gtk_list_box_row_new();
+    style(row,"device-row");
+    GtkWidget *box=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,10), *text=gtk_box_new(GTK_ORIENTATION_VERTICAL,2);
+    GtkWidget *symbol=image(device_icon(disk),21); style(symbol,"device-symbol");
+    gtk_widget_set_size_request(symbol,24,24); gtk_widget_set_valign(symbol,GTK_ALIGN_START); gtk_widget_set_margin_top(symbol,2);
+    gtk_box_pack_start(GTK_BOX(box),symbol,FALSE,FALSE,0);
+    GtkWidget *name=label(disk->title,"device-name"); ellipsize(name);
+    gtk_box_pack_start(GTK_BOX(text), name, FALSE, FALSE, 0);
+    char *size=format_size(disk->bytes), *detail=g_strdup_printf("%s · %s", disk->path, size);
+    GtkWidget *sub=label(detail,"device-subtitle"); ellipsize(sub);
+    gtk_box_pack_start(GTK_BOX(text), sub, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), text, TRUE, TRUE, 0); gtk_container_add(GTK_CONTAINER(row), box);
+    g_object_set_data(G_OBJECT(row), "index", GUINT_TO_POINTER(index));
+    g_free(size); g_free(detail); return row;
+}
+
+/* Explicit scans rebuild inventory; hotplug only appends or removes affected rows. */
 static void render_sidebar(App *app)
 {
-    g_signal_handlers_block_by_func(app->sidebar, disk_selected, app); clear(app->sidebar);
-    for (guint i=0; i<app->disks->len; i++)
-    {
-        Disk *disk=app->disks->pdata[i]; GtkWidget *row=gtk_list_box_row_new();
-        style(row,"device-row");
-        GtkWidget *box=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,10), *text=gtk_box_new(GTK_ORIENTATION_VERTICAL,2);
-        GtkWidget *symbol=image(device_icon(disk),21); style(symbol,"device-symbol");
-        gtk_widget_set_size_request(symbol,24,24); gtk_widget_set_valign(symbol,GTK_ALIGN_START); gtk_widget_set_margin_top(symbol,2);
-        gtk_box_pack_start(GTK_BOX(box),symbol,FALSE,FALSE,0);
-        GtkWidget *name=label(disk->title,"device-name"); ellipsize(name);
-        gtk_box_pack_start(GTK_BOX(text), name, FALSE, FALSE, 0);
-        char *size=format_size(disk->bytes), *detail=g_strdup_printf("%s · %s", disk->path, size);
-        GtkWidget *sub=label(detail,"device-subtitle"); ellipsize(sub);
-        gtk_box_pack_start(GTK_BOX(text), sub, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(box), text, TRUE, TRUE, 0); gtk_container_add(GTK_CONTAINER(row), box);
-        g_object_set_data(G_OBJECT(row), "index", GUINT_TO_POINTER(i)); gtk_container_add(GTK_CONTAINER(app->sidebar), row);
-        if (i==app->active) gtk_list_box_select_row(GTK_LIST_BOX(app->sidebar), GTK_LIST_BOX_ROW(row));
-        g_free(size); g_free(detail);
-    }
-    gtk_widget_show_all(app->sidebar); g_signal_handlers_unblock_by_func(app->sidebar, disk_selected, app);
+    g_signal_handlers_block_by_func(app->sidebar,disk_selected,app); clear(app->sidebar);
+    for (guint i=0; i<app->disks->len; i++) gtk_container_add(GTK_CONTAINER(app->sidebar),device_row(app->disks->pdata[i],i));
+    if (app->disks->len) gtk_list_box_select_row(GTK_LIST_BOX(app->sidebar),gtk_list_box_get_row_at_index(GTK_LIST_BOX(app->sidebar),app->active));
+    gtk_widget_show_all(app->sidebar); g_signal_handlers_unblock_by_func(app->sidebar,disk_selected,app);
 }
 
 /* Update the Workspace while all state remains in the model and Undo snapshots. */
@@ -464,9 +480,10 @@ static void render(App *app, gboolean rebuild_rows)
     }
     gtk_widget_show_all(app->notice);
     gboolean editable=!disk->readonly && !disk->unsupported && !app->working;
-    gtk_widget_set_sensitive(app->create, editable && chosen.number==-1 && *disk->label && chosen.size*disk->sector>=4194304);
+    gboolean free_space=chosen.number==-1 && chosen.size*disk->sector>=4194304;
+    gtk_widget_set_sensitive(app->create, editable && (!*disk->label || free_space));
     GtkStyleContext *create_style=gtk_widget_get_style_context(app->create);
-    if (editable && !part) gtk_style_context_add_class(create_style,"suggested-action"); else gtk_style_context_remove_class(create_style,"suggested-action");
+    if (editable && (!part || !*disk->label)) gtk_style_context_add_class(create_style,"suggested-action"); else gtk_style_context_remove_class(create_style,"suggested-action");
     gtk_widget_set_sensitive(app->edit, editable && part && part->number && (!part->origin || !strcmp(disk->label,"gpt")));
     gboolean planned=part && part->number && !part->origin;
     gtk_widget_set_sensitive(app->resize, editable && (planned || can_grow(disk,part)));
@@ -674,6 +691,110 @@ static GtkWidget *filesystem_combo(const char *current, gboolean empty)
     return combo;
 }
 
+/* Keep the empty state and selected workspace synchronized without discarding plans. */
+static void show_devices(App *app, gboolean rebuild_rows)
+{
+    gtk_stack_set_visible_child_name(GTK_STACK(app->content),app->disks->len?"disk":"empty");
+    if (app->disks->len) { render(app,rebuild_rows); return; }
+    clear(app->rows); clear(app->details); clear(app->header_icon); clear(app->status_icon);
+    gtk_window_set_title(GTK_WINDOW(app->window),"Partition Manager");
+    gtk_label_set_text(GTK_LABEL(app->header_device),"");
+    gtk_label_set_text(GTK_LABEL(gtk_stack_get_child_by_name(GTK_STACK(app->content),"empty")),"No disks were found.");
+    gtk_label_set_text(GTK_LABEL(app->status),"No disks were found.");
+    gtk_widget_set_sensitive(app->undo,FALSE); gtk_widget_set_sensitive(app->review,FALSE);
+}
+
+/* Match inventory entries by their canonical path; identity is checked separately. */
+static gint disk_index(App *app, const char *path)
+{
+    for (guint i=0; i<app->disks->len; i++) if (!strcmp(((Disk *)app->disks->pdata[i])->path,path)) return i;
+    return -1;
+}
+
+/* Detect removal or replacement using node metadata without opening a disk. */
+static gboolean same_node(Disk *disk)
+{
+    struct stat node;
+    if (stat(disk->path,&node)<0) return FALSE;
+    return node.st_dev==disk->identity.st_dev && node.st_ino==disk->identity.st_ino && node.st_rdev==disk->identity.st_rdev;
+}
+
+/* Coalesce whole-device events and defer them while any dialog or disk job is active. */
+static gboolean devices_idle(gpointer data)
+{
+    App *app=data; app->device_idle=0;
+    if (app->working) return G_SOURCE_REMOVE;
+    GList *windows=gtk_window_list_toplevels(); gboolean dialog=FALSE;
+    for (GList *item=windows; item; item=item->next) dialog|=GTK_IS_DIALOG(item->data) && gtk_widget_get_visible(item->data);
+    g_list_free(windows); if (dialog) return G_SOURCE_REMOVE;
+    Job *job=g_new0(Job,1); job->type=DISCOVER; job->plans=g_ptr_array_new_with_free_func(disk_free); job->log=g_string_new(NULL);
+    Disk *selected=app->disks->len?app->disks->pdata[app->active]:NULL;
+    gboolean changed=FALSE; GHashTableIter events; gpointer key;
+    g_signal_handlers_block_by_func(app->sidebar,disk_selected,app);
+    g_hash_table_iter_init(&events,app->device_events);
+    while (g_hash_table_iter_next(&events,&key,NULL))
+    {
+        const char *path=key; gint index=disk_index(app,path);
+        if (index>=0)
+        {
+            Disk *disk=app->disks->pdata[index];
+            if (same_node(disk)) { g_hash_table_iter_remove(&events); continue; }
+            gboolean keep=disk_changed(disk);
+            for (guint i=0; i<app->history->len; i++) keep|=((Undo *)app->history->pdata[i])->disk==(guint)index;
+            if (keep) continue;
+            gtk_widget_destroy(GTK_WIDGET(gtk_list_box_get_row_at_index(GTK_LIST_BOX(app->sidebar),index)));
+            g_ptr_array_remove_index(app->disks,index); changed=TRUE;
+            if (app->active>(guint)index) app->active--;
+            else if (app->active>=app->disks->len) app->active=0;
+            for (guint i=0; i<app->history->len; i++)
+            {
+                Undo *undo=app->history->pdata[i]; if (undo->disk>(guint)index) undo->disk--;
+            }
+        }
+        struct stat node;
+        if (stat(path,&node)==0 && S_ISBLK(node.st_mode)) g_ptr_array_add(job->plans,disk_new(path));
+        g_hash_table_iter_remove(&events);
+    }
+    for (guint i=0; i<app->disks->len; i++) g_object_set_data(G_OBJECT(gtk_list_box_get_row_at_index(GTK_LIST_BOX(app->sidebar),i)),"index",GUINT_TO_POINTER(i));
+    if (app->disks->len) gtk_list_box_select_row(GTK_LIST_BOX(app->sidebar),gtk_list_box_get_row_at_index(GTK_LIST_BOX(app->sidebar),app->active));
+    g_signal_handlers_unblock_by_func(app->sidebar,disk_selected,app);
+    gboolean selection_changed=selected!=(app->disks->len?app->disks->pdata[app->active]:NULL);
+    if (selection_changed) { app->selected=-1; app->free_start=0; }
+    if (changed) show_devices(app,selection_changed);
+    if (job->plans->len) launch_job(app,job); else job_free(job);
+    return G_SOURCE_REMOVE;
+}
+
+/* A single idle source replaces polling and is restarted by dialog/job completion. */
+static void schedule_devices(App *app)
+{
+    if (!app->working && !app->device_idle && g_hash_table_size(app->device_events)) app->device_idle=g_idle_add(devices_idle,app);
+}
+
+/* Kernel-side filtering excludes partition events; known-disk changes need no probing. */
+static gboolean device_event(gint fd, GIOCondition condition, gpointer data)
+{
+    (void)fd; App *app=data;
+    if (condition&(G_IO_ERR|G_IO_HUP)) { app->monitor_source=0; return G_SOURCE_REMOVE; }
+    struct udev_device *device;
+    while ((device=udev_monitor_receive_device(app->monitor)))
+    {
+        const char *path=udev_device_get_devnode(device), *action=udev_device_get_action(device);
+        gboolean relevant=action && (!strcmp(action,"add") || !strcmp(action,"remove") || !strcmp(action,"change"));
+        if (path && relevant)
+        {
+            gboolean visible=!g_str_has_prefix(path,"/dev/zram") && (app->include_loop || !g_str_has_prefix(path,"/dev/loop"));
+            if (app->only && strcmp(path,app->only)) visible=FALSE;
+            if (g_strcmp0(udev_device_get_property_value(device,"ID_CDROM"),"1")==0) visible=FALSE;
+            gint index=disk_index(app,path);
+            if (!strcmp(action,"change") && index>=0 && same_node(app->disks->pdata[index])) visible=FALSE;
+            if (visible) g_hash_table_add(app->device_events,g_strdup(path));
+        }
+        udev_device_unref(device);
+    }
+    schedule_devices(app); return G_SOURCE_CONTINUE;
+}
+
 /* The focused editor keeps geometry visual and fields limited to name and filesystem. */
 static void edit_partition(App *app, EditMode mode)
 {
@@ -857,7 +978,7 @@ static void review_done(GObject *source, GAsyncResult *result, gpointer data)
     (void)data; Review *review=g_object_get_data(source,"review"); App *app=review->app;
     Job *job=g_task_get_task_data(G_TASK(result)); GError *error=NULL;
     GPtrArray *disks=g_task_propagate_pointer(G_TASK(result),&error); gboolean mounted=FALSE;
-    app->working=FALSE; gtk_widget_set_sensitive(app->body,TRUE);
+    app->working=FALSE; gtk_widget_set_sensitive(app->body,TRUE); schedule_devices(app);
     review->busy=FALSE; review->ready=disks!=NULL;
     for (guint i=0; disks && i<disks->len; i++)
     {
@@ -1025,7 +1146,11 @@ static void action(GtkButton *widget, gpointer data)
     }
     if (!app->disks->len) return;
     Disk *disk=app->disks->pdata[app->active]; Partition *part=selected_part(app);
-    if (!strcmp(command,"create")) edit_partition(app,CREATE);
+    if (!strcmp(command,"create"))
+    {
+        if (*disk->label) edit_partition(app,CREATE);
+        else new_table_dialog(app);
+    }
     if (!strcmp(command,"edit")) edit_partition(app,RENAME);
     if (!strcmp(command,"resize")) edit_partition(app,part->origin?GROW:ADJUST);
     if (!strcmp(command,"format")) edit_partition(app,FORMAT);
@@ -1047,6 +1172,7 @@ static void action(GtkButton *widget, gpointer data)
     if (!strcmp(command,"save")) save_layout(app);
     if (!strcmp(command,"info")) properties(app,disk);
     if (!strcmp(command,"check")) start_job(app,CHECK,FALSE);
+    schedule_devices(app);
 }
 
 /* A worker owns immutable plans and its result log while GTK keeps responding. */
@@ -1054,6 +1180,39 @@ static void job_free(gpointer data)
 {
     Job *job=data;
     g_ptr_array_unref(job->plans); g_free(job->backup); g_free(job->only); g_string_free(job->log,TRUE); g_free(job);
+}
+
+typedef struct { GtkWidget *dialog; char *text; double fraction; } ProgressUpdate;
+typedef struct { GTask *task; const char *path; guint disk, disks; } ProgressContext;
+
+/* Only GTK's main thread updates widgets; queued updates hold the dialog alive. */
+static gboolean progress_update(gpointer data)
+{
+    ProgressUpdate *update=data;
+    GtkWidget *bar=g_object_get_data(G_OBJECT(update->dialog),"progress-bar");
+    GtkWidget *caption=g_object_get_data(G_OBJECT(update->dialog),"progress-label");
+    if (bar && caption)
+    {
+        gtk_label_set_text(GTK_LABEL(caption),update->text);
+        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(bar),update->fraction);
+    }
+    g_object_unref(update->dialog); g_free(update->text); g_free(update); return G_SOURCE_REMOVE;
+}
+
+/* Ignore window-manager close requests until the worker has finished its writes. */
+static gboolean progress_close(GtkWidget *widget, GdkEvent *event, gpointer data)
+{
+    (void)widget; (void)event; (void)data; return TRUE;
+}
+
+/* Aggregate actual phase completion across disks without estimating tool runtimes. */
+static void report_progress(const char *step, guint completed, guint total, gpointer data)
+{
+    ProgressContext *context=data; ProgressUpdate *update=g_new0(ProgressUpdate,1);
+    update->dialog=g_object_ref(g_task_get_source_object(context->task));
+    update->text=g_strdup_printf("%s — %s",context->path,step);
+    update->fraction=(context->disk+(double)completed/total)/context->disks;
+    g_idle_add_full(G_PRIORITY_DEFAULT,progress_update,update,NULL);
 }
 
 /* Discovery and destructive tools never run in the GTK event thread. */
@@ -1088,8 +1247,22 @@ static void worker(GTask *task, gpointer source, gpointer data, GCancellable *ca
     if (job->type==APPLY)
     {
         for (guint i=0; i<job->plans->len; i++)
-            if (!engine_apply(job->plans->pdata[i],job->backup,job->log,&job->options,&error)) { g_task_return_error(task,error); return; }
+        {
+            Disk *disk=job->plans->pdata[i]; ProgressContext context={task,disk->path,i,job->plans->len};
+            job->options.progress=report_progress; job->options.progress_data=&context;
+            if (!engine_apply(disk,job->backup,job->log,&job->options,&error)) { g_task_return_error(task,error); return; }
+        }
         g_task_return_pointer(task,NULL,NULL); return;
+    }
+    if (job->type==DISCOVER)
+    {
+        GPtrArray *disks=g_ptr_array_new_with_free_func(disk_free);
+        for (guint i=0; i<job->plans->len; i++)
+        {
+            Disk *disk=engine_read(((Disk *)job->plans->pdata[i])->path,NULL);
+            if (disk) g_ptr_array_add(disks,disk);
+        }
+        g_task_return_pointer(task,disks,(GDestroyNotify)g_ptr_array_unref); return;
     }
     GPtrArray *result=engine_scan(job->only,job->include_loop,&error);
     if (!result) g_task_return_error(task,error); else g_task_return_pointer(task,result,(GDestroyNotify)g_ptr_array_unref);
@@ -1100,13 +1273,29 @@ static void job_done(GObject *source, GAsyncResult *result, gpointer data)
 {
     (void)source; App *app=data; GTask *task=G_TASK(result); Job *job=g_task_get_task_data(task); GError *error=NULL;
     GPtrArray *disks=g_task_propagate_pointer(task,&error);
-    app->working=FALSE; gtk_spinner_stop(GTK_SPINNER(app->spinner)); gtk_widget_hide(app->spinner); gtk_widget_set_sensitive(app->body,TRUE);
+    app->working=FALSE; gtk_spinner_stop(GTK_SPINNER(app->spinner)); gtk_widget_hide(app->spinner); gtk_widget_set_sensitive(app->body,TRUE); schedule_devices(app);
+    if (job->type==DISCOVER)
+    {
+        gboolean empty=!app->disks->len;
+        g_signal_handlers_block_by_func(app->sidebar,disk_selected,app);
+        while (disks && disks->len)
+        {
+            Disk *disk=g_ptr_array_steal_index(disks,0);
+            if (!same_node(disk) || disk_index(app,disk->path)>=0) { disk_free(disk); continue; }
+            g_ptr_array_add(app->disks,disk); gtk_container_add(GTK_CONTAINER(app->sidebar),device_row(disk,app->disks->len-1));
+        }
+        if (app->disks->len) gtk_list_box_select_row(GTK_LIST_BOX(app->sidebar),gtk_list_box_get_row_at_index(GTK_LIST_BOX(app->sidebar),app->active));
+        gtk_widget_show_all(app->sidebar); g_signal_handlers_unblock_by_func(app->sidebar,disk_selected,app);
+        show_devices(app,empty); if (disks) g_ptr_array_unref(disks); g_clear_error(&error); return;
+    }
     if (job->type==CHECK)
     {
         render(app,TRUE); message(app,error?"Partition-table check failed":"Partition table checked",error?error->message:"sfdisk completed the partition-table check. Filesystems were not checked.",job->log->str); g_clear_error(&error); return;
     }
     if (job->type==APPLY)
     {
+        g_object_set_data(G_OBJECT(app->progress),"progress-bar",NULL); g_object_set_data(G_OBJECT(app->progress),"progress-label",NULL);
+        gtk_widget_destroy(app->progress); app->progress=NULL;
         const char *title=job->options.reboot_required?"Changes written — restart required":"Changes applied";
         const char *note=job->options.reboot_required?"The on-disk layout has changed. Linux still uses some previous partition entries. Restart before using the changed partitions.":"The requested disk and filesystem changes are complete.";
         message(app,error?"Disk operations stopped":title,error?error->message:note,job->log->str);
@@ -1122,17 +1311,7 @@ static void job_done(GObject *source, GAsyncResult *result, gpointer data)
     }
     g_ptr_array_unref(app->disks); app->disks=disks; g_ptr_array_set_size(app->history,0);
     app->active=0; app->selected=-1; app->free_start=0;
-    gtk_stack_set_visible_child_name(GTK_STACK(app->content),disks->len?"disk":"empty");
-    if (disks->len) { render_sidebar(app); render(app,TRUE); }
-    else
-    {
-        render_sidebar(app);
-        gtk_window_set_title(GTK_WINDOW(app->window),"Partition Manager");
-        gtk_label_set_text(GTK_LABEL(app->header_device),""); clear(app->header_icon); clear(app->status_icon);
-        gtk_label_set_text(GTK_LABEL(gtk_stack_get_child_by_name(GTK_STACK(app->content),"empty")),"No disks were found.");
-        gtk_label_set_text(GTK_LABEL(app->status),"No disks were found.");
-        gtk_widget_set_sensitive(app->undo,FALSE); gtk_widget_set_sensitive(app->review,FALSE);
-    }
+    render_sidebar(app); show_devices(app,TRUE);
 }
 
 /* Copy selected plans before disabling editing and starting the worker. */
@@ -1144,13 +1323,35 @@ static void start_job(App *app, JobType type, gboolean allow_busy)
     if (type==APPLY)
         for (guint i=0; i<app->disks->len; i++) if (disk_changed(app->disks->pdata[i])) g_ptr_array_add(job->plans,disk_copy(app->disks->pdata[i]));
     if (type==CHECK) g_ptr_array_add(job->plans,disk_copy(app->disks->pdata[app->active]));
+    launch_job(app,job);
+}
+
+/* Serialize background reads with partition work; no disk operations run on GTK's thread. */
+static void launch_job(App *app, Job *job)
+{
+    JobType type=job->type;
     if (type==SCAN) gtk_stack_set_visible_child_name(GTK_STACK(app->content),"loading");
     app->working=TRUE; gtk_widget_set_sensitive(app->body,FALSE); gtk_widget_set_sensitive(app->undo,FALSE); gtk_widget_set_sensitive(app->review,FALSE);
     const char *status="Reading disks…";
     if (type==APPLY) status="Applying changes. Keep the disk connected…";
     if (type==CHECK) status="Checking partition table…";
-    gtk_widget_hide(app->status_icon); gtk_widget_show(app->spinner); gtk_label_set_text(GTK_LABEL(app->status),status); gtk_spinner_start(GTK_SPINNER(app->spinner));
-    GTask *task=g_task_new(NULL,NULL,job_done,app); g_task_set_task_data(task,job,job_free); g_task_run_in_thread(task,worker); g_object_unref(task);
+    gtk_widget_hide(app->status_icon); gtk_label_set_text(GTK_LABEL(app->status),status);
+    if (type==APPLY)
+    {
+        app->progress=make_dialog(app,"Applying changes",560,NULL);
+        gtk_window_set_deletable(GTK_WINDOW(app->progress),FALSE);
+        g_signal_connect(app->progress,"delete-event",G_CALLBACK(progress_close),NULL);
+        gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(gtk_window_get_titlebar(GTK_WINDOW(app->progress))),FALSE);
+        GtkWidget *body=g_object_get_data(G_OBJECT(app->progress),"body");
+        GtkWidget *caption=label("Checking device",NULL), *bar=gtk_progress_bar_new(); gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(bar),TRUE);
+        gtk_label_set_line_wrap(GTK_LABEL(caption),TRUE); gtk_box_set_spacing(GTK_BOX(body),16);
+        gtk_box_pack_start(GTK_BOX(body),caption,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(body),bar,FALSE,FALSE,0);
+        gtk_box_pack_start(GTK_BOX(body),label("Keep the disk connected until the operation finishes.","muted"),FALSE,FALSE,0);
+        g_object_set_data(G_OBJECT(app->progress),"progress-label",caption); g_object_set_data(G_OBJECT(app->progress),"progress-bar",bar);
+        gtk_widget_show_all(app->progress);
+    }
+    else { gtk_widget_show(app->spinner); gtk_spinner_start(GTK_SPINNER(app->spinner)); }
+    GTask *task=g_task_new(type==APPLY?app->progress:NULL,NULL,job_done,app); g_task_set_task_data(task,job,job_free); g_task_run_in_thread(task,worker); g_object_unref(task);
 }
 
 /* Closing cannot terminate an in-progress filesystem operation or silently lose edits. */
@@ -1172,6 +1373,7 @@ int ui_run(int argc, char **argv, const char *only, gboolean readonly, gboolean 
 {
     gtk_init(&argc,&argv); App app={.active=0,.selected=-1,.readonly=readonly,.include_loop=include_loop,.only=g_strdup(only)};
     app.disks=g_ptr_array_new_with_free_func(disk_free); app.history=g_ptr_array_new_with_free_func(undo_free);
+    app.device_events=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,NULL);
     GtkCssProvider *css=gtk_css_provider_new(); gtk_css_provider_load_from_resource(css,"/org/slax/partition-manager/style.css");
     gtk_style_context_add_provider_for_screen(gdk_screen_get_default(),GTK_STYLE_PROVIDER(css),GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); g_object_unref(css);
     app.window=gtk_window_new(GTK_WINDOW_TOPLEVEL); gtk_window_set_wmclass(GTK_WINDOW(app.window),"partition-manager","PartitionManager");
@@ -1241,6 +1443,13 @@ int ui_run(int argc, char **argv, const char *only, gboolean readonly, gboolean 
     g_signal_connect(app.sidebar,"row-selected",G_CALLBACK(disk_selected),&app); g_signal_connect(app.rows,"row-selected",G_CALLBACK(row_selected),&app);
     g_signal_connect(app.rows,"row-activated",G_CALLBACK(row_activated),&app);
     g_signal_connect(app.map,"draw",G_CALLBACK(map_draw),&app); g_signal_connect(app.map,"button-press-event",G_CALLBACK(map_press),&app); g_signal_connect(app.window,"delete-event",G_CALLBACK(close_window),&app);
+    struct udev *udev=udev_new(); app.monitor=udev_monitor_new_from_netlink(udev,"udev"); udev_unref(udev);
+    if (app.monitor && udev_monitor_filter_add_match_subsystem_devtype(app.monitor,"block","disk")==0 && udev_monitor_enable_receiving(app.monitor)==0)
+        app.monitor_source=g_unix_fd_add(udev_monitor_get_fd(app.monitor),G_IO_IN|G_IO_ERR|G_IO_HUP,device_event,&app);
+    else g_warning("Automatic disk detection could not be started.");
     gtk_widget_show_all(app.window); start_job(&app,SCAN,FALSE); gtk_main();
+    if (app.device_idle) g_source_remove(app.device_idle);
+    if (app.monitor_source) g_source_remove(app.monitor_source);
+    udev_monitor_unref(app.monitor); g_hash_table_unref(app.device_events);
     g_ptr_array_unref(app.disks); g_ptr_array_unref(app.history); g_object_unref(app.size_group); g_free(app.only); return 0;
 }

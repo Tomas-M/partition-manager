@@ -1,5 +1,5 @@
 CC?=cc
-PKGS=gtk+-3.0 json-glib-1.0 gio-unix-2.0
+PKGS=gtk+-3.0 json-glib-1.0 gio-unix-2.0 libudev
 CPPFLAGS+=$(shell pkg-config --cflags $(PKGS))
 CFLAGS?=-O2 -g
 CFLAGS+=-std=c11 -Wall -Wextra -Wformat=2 -Wshadow -Wno-deprecated-declarations

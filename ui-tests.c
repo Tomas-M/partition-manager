@@ -1,6 +1,10 @@
 #include "partition-manager.h"
 #include <gtk/gtk.h>
 #include <fcntl.h>
+#include <sys/file.h>
+#include <sys/ioctl.h>
+#include <linux/loop.h>
+#include <errno.h>
 #include <unistd.h>
 #include <string.h>
 
@@ -9,6 +13,9 @@ static GtkWidget *workspace;
 static int sidebar_width, details_width, map_width, window_width, window_height, held_mount;
 static GtkListBoxRow *stable_rows[2];
 static guint clicks;
+static int apply_lock, loop_control, loop_number;
+static char *fixture_image;
+static GtkWidget *stable_device;
 static char *fixture_path, *fixture_mount;
 
 /* Find semantic layout elements without depending on window coordinates. */
@@ -89,6 +96,18 @@ static gboolean cancel_review(gpointer data)
     gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_CANCEL); return G_SOURCE_REMOVE;
 }
 
+/* Primary and Cancel remain together at the right edge, in that order. */
+static void assert_dialog_buttons(GtkWidget *modal)
+{
+    GtkWidget *accept=gtk_dialog_get_widget_for_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT);
+    GtkWidget *cancel=gtk_dialog_get_widget_for_response(GTK_DIALOG(modal),GTK_RESPONSE_CANCEL);
+    if (!accept || !cancel || !gtk_widget_get_visible(cancel)) return;
+    GtkWidget *footer=gtk_dialog_get_action_area(GTK_DIALOG(modal)); int ax,ay,cx,cy;
+    g_assert_cmpint(gtk_button_box_get_layout(GTK_BUTTON_BOX(footer)),==,GTK_BUTTONBOX_END);
+    gtk_widget_translate_coordinates(accept,footer,0,0,&ax,&ay); gtk_widget_translate_coordinates(cancel,footer,0,0,&cx,&cy);
+    g_assert_cmpint(ax,<,cx);
+}
+
 /* Short review plans stay fully visible when the disk-use status changes. */
 static void assert_review_plan(GtkWidget *modal)
 {
@@ -161,10 +180,17 @@ static gboolean step(gpointer data)
     }
     GtkWidget *list=partition_list(workspace), *modal=dialog();
     g_assert_null(find(styled(workspace,"details"),GTK_TYPE_BUTTON,NULL));
+    if (modal && gtk_widget_get_allocated_width(modal)>1) assert_dialog_buttons(modal);
     if (data)
     {
         if (!list) return FALSE;
         if (phase==0)
+        {
+            GtkWidget *create=find(workspace,GTK_TYPE_BUTTON,"create");
+            if (!gtk_widget_is_sensitive(create)) return FALSE;
+            phase=10; gtk_button_clicked(GTK_BUTTON(create));
+        }
+        else if (phase==11)
         {
             GtkWidget *map=styled(workspace,"disk-map"); gboolean handled=FALSE;
             /* A completed scan can precede the next GTK allocation. */
@@ -172,7 +198,7 @@ static gboolean step(gpointer data)
             GdkEventButton event={.type=GDK_2BUTTON_PRESS,.button=1,.x=gtk_widget_get_allocated_width(map)/2,.y=30};
             phase=1; g_signal_emit_by_name(map,"button-press-event",&event,&handled); g_assert_true(handled);
         }
-        else if (phase==1 || phase==3)
+        else if (phase==1 || phase==3 || phase==10)
         {
             if (!modal) return FALSE;
             g_assert_cmpstr(gtk_window_get_title(GTK_WINDOW(modal)),==,"New partition table");
@@ -189,7 +215,7 @@ static gboolean step(gpointer data)
         else if (phase==4 && !modal)
         {
             g_assert_true(gtk_widget_is_sensitive(find(workspace,GTK_TYPE_BUTTON,"review")));
-            if (GPOINTER_TO_INT(data)==2)
+            if (GPOINTER_TO_INT(data)>=2)
             {
                 phase=5; gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"review")));
             }
@@ -198,6 +224,35 @@ static gboolean step(gpointer data)
                 gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"undo")));
                 g_assert_false(gtk_widget_is_sensitive(find(workspace,GTK_TYPE_BUTTON,"review"))); gtk_main_quit();
             }
+        }
+        else if (GPOINTER_TO_INT(data)==3 && phase==5)
+        {
+            if (!modal || gtk_widget_get_visible(find(modal,GTK_TYPE_SPINNER,NULL))) return FALSE;
+            GtkWidget *apply=gtk_dialog_get_widget_for_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT);
+            g_assert_true(gtk_widget_is_sensitive(apply)); apply_lock=open(fixture_path,O_RDWR);
+            g_assert_cmpint(apply_lock,>=,0); g_assert_cmpint(flock(apply_lock,LOCK_EX),==,0);
+            phase=6; gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT);
+        }
+        else if (GPOINTER_TO_INT(data)==3 && phase==6)
+        {
+            if (!modal || strcmp(gtk_window_get_title(GTK_WINDOW(modal)),"Applying changes")) return FALSE;
+            GtkWidget *bar=find(modal,GTK_TYPE_PROGRESS_BAR,NULL); g_assert_nonnull(bar);
+            g_assert_true(gtk_window_get_modal(GTK_WINDOW(modal))); g_assert_false(gtk_window_get_deletable(GTK_WINDOW(modal)));
+            g_assert_false(gtk_widget_get_visible(gtk_dialog_get_action_area(GTK_DIALOG(modal))));
+            g_assert_false(gtk_widget_get_visible(find(styled(workspace,"footer"),GTK_TYPE_SPINNER,NULL)));
+            g_assert_cmpfloat(gtk_progress_bar_get_fraction(GTK_PROGRESS_BAR(bar)),==,0);
+            gboolean handled=FALSE; g_signal_emit_by_name(modal,"delete-event",NULL,&handled); g_assert_true(handled);
+            gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_CANCEL); g_assert_true(gtk_widget_get_visible(modal));
+            capture(modal,"/tmp/partition-manager-apply-progress.png"); close(apply_lock); phase=7;
+        }
+        else if (GPOINTER_TO_INT(data)==3 && phase==7)
+        {
+            if (!modal || strcmp(gtk_window_get_title(GTK_WINDOW(modal)),"Changes applied")) return FALSE;
+            phase=8; gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT);
+        }
+        else if (GPOINTER_TO_INT(data)==3 && phase==8)
+        {
+            if (!modal && gtk_widget_is_sensitive(find(workspace,GTK_TYPE_BUTTON,"create"))) gtk_main_quit();
         }
         else if (phase==5 || phase==6)
         {
@@ -484,10 +539,100 @@ static gboolean step(gpointer data)
     return FALSE;
 }
 
+/* Remove only the loop number allocated by this process, after detaching its owned image. */
+static void remove_fixture(void)
+{
+    const char *detach[]={"losetup","--detach",fixture_path,NULL}; GError *error=NULL;
+    g_assert_true(command_run(detach,NULL,-1,NULL,NULL,&error));
+    g_assert_cmpint(ioctl(loop_control,LOOP_CTL_REMOVE,loop_number),==,0);
+}
+
+/* Real udev add/remove events must defer modal updates and preserve pending plans. */
+static gboolean events_step(gpointer data)
+{
+    (void)data; g_timeout_add(150,events_step,NULL);
+    if (++attempts>150) g_error("Hotplug test timed out in phase %u",phase);
+    if (!workspace)
+    {
+        GList *windows=gtk_window_list_toplevels();
+        for (GList *item=windows; item; item=item->next) if (!GTK_IS_DIALOG(item->data) && gtk_widget_get_visible(item->data)) workspace=item->data;
+        g_list_free(windows); if (!workspace) return FALSE;
+    }
+    GtkWidget *row=styled(workspace,"device-row"), *modal=dialog();
+    GtkWidget *create=find(workspace,GTK_TYPE_BUTTON,"create"), *review=find(workspace,GTK_TYPE_BUTTON,"review");
+    if (phase==0)
+    {
+        if (!row || !gtk_widget_is_sensitive(create)) return FALSE;
+        stable_device=g_object_ref(row); phase=1; gtk_button_clicked(GTK_BUTTON(create));
+    }
+    else if (phase==1)
+    {
+        g_assert_nonnull(modal); remove_fixture(); phase=2;
+    }
+    else if (phase==2)
+    {
+        g_assert_true(row==stable_device); g_assert_nonnull(modal);
+        phase=3; gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT);
+    }
+    else if (phase==3)
+    {
+        if (modal) return FALSE;
+        g_assert_true(row==stable_device); g_assert_true(gtk_widget_is_sensitive(review));
+        phase=4; gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"undo")));
+    }
+    else if (phase==4)
+    {
+        if (row) return FALSE;
+        g_object_unref(stable_device); stable_device=NULL;
+        g_assert_cmpint(ioctl(loop_control,LOOP_CTL_ADD,loop_number),==,loop_number);
+        const char *attach[]={"losetup",fixture_path,fixture_image,NULL}; GError *error=NULL;
+        g_assert_true(command_run(attach,NULL,-1,NULL,NULL,&error)); phase=5;
+    }
+    else if (phase==5)
+    {
+        if (!row || !gtk_widget_is_sensitive(create)) return FALSE;
+        g_assert_false(gtk_widget_is_sensitive(review)); stable_device=g_object_ref(row);
+        phase=6; gtk_button_clicked(GTK_BUTTON(create));
+    }
+    else if (phase==6)
+    {
+        g_assert_nonnull(modal); phase=7; gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT);
+    }
+    else if (phase==7)
+    {
+        if (modal) return FALSE;
+        char *sys=g_strdup_printf("/sys/class/block/loop%d",loop_number);
+        const char *trigger[]={"udevadm","trigger","--action=change",sys,NULL}; GError *error=NULL;
+        g_assert_true(command_run(trigger,NULL,-1,NULL,NULL,&error)); g_free(sys); phase=8;
+    }
+    else if (phase==8)
+    {
+        g_assert_true(row==stable_device); g_assert_true(gtk_widget_is_sensitive(review));
+        capture(workspace,"/tmp/partition-manager-hotplug-plan.png");
+        gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"undo"))); remove_fixture(); phase=9;
+    }
+    else if (phase==9 && !row) { g_object_unref(stable_device); gtk_main_quit(); }
+    return FALSE;
+}
+
 /* The test owns a loop-backed fixture and verifies that GUI planning left the partition table unchanged. */
 int main(int argc, char **argv)
 {
-    gboolean empty_table=argc==3 && !strcmp(argv[1],"--empty-table");
+    if (argc==3 && !strcmp(argv[1],"--events"))
+    {
+        fixture_image=g_strdup(argv[2]); g_assert_true(g_str_has_prefix(fixture_image,"/tmp/partitions-test-ui-"));
+        loop_control=open("/dev/loop-control",O_RDWR); g_assert_cmpint(loop_control,>=,0);
+        loop_number=1024;
+        while (ioctl(loop_control,LOOP_CTL_ADD,loop_number)<0) { g_assert_cmpint(errno,==,EEXIST); loop_number++; }
+        fixture_path=g_strdup_printf("/dev/loop%d",loop_number);
+        const char *attach[]={"losetup",fixture_path,fixture_image,NULL}; GError *error=NULL;
+        g_assert_true(command_run(attach,NULL,-1,NULL,NULL,&error));
+        g_timeout_add(150,events_step,NULL); char *args[]={argv[0],NULL}; ui_run(1,args,fixture_path,FALSE,TRUE);
+        close(loop_control); g_free(fixture_path); g_free(fixture_image);
+        g_print("PASS: real udev add/remove/change events, deferred modal updates, stable sidebar rows and preserved pending plans.\n"); return 0;
+    }
+    gboolean apply=argc==3 && !strcmp(argv[1],"--apply");
+    gboolean empty_table=argc==3 && (!strcmp(argv[1],"--empty-table") || apply);
     gboolean whole_device=argc==3 && !strcmp(argv[1],"--whole-device");
     g_assert_cmpint(argc,==,empty_table || whole_device?3:2); const char *path=argv[argc-1];
     g_assert_true(g_str_has_prefix(path,empty_table?"/tmp/":"/dev/loop"));
@@ -502,11 +647,14 @@ int main(int argc, char **argv)
     if (!empty_table) fixture_mount=g_strdup(((Partition *)before->parts->pdata[0])->mount);
     guint scenario=empty_table;
     if (whole_device) scenario=2;
+    if (apply) scenario=3;
     g_timeout_add(150,step,GUINT_TO_POINTER(scenario));
     char *args[]={argv[0],NULL}; ui_run(1,args,path,FALSE,TRUE);
     Disk *after=engine_read(path,&error); g_assert_nonnull(after);
-    g_assert_cmpstr(before->snapshot,==,after->snapshot);
+    if (apply) { g_assert_cmpstr(after->label,==,"gpt"); g_assert_cmpstr(before->snapshot,!=,after->snapshot); }
+    else g_assert_cmpstr(before->snapshot,==,after->snapshot);
     disk_free(before); disk_free(after); g_free(fixture_path); g_free(fixture_mount);
+    if (apply) { g_print("PASS: modal Apply progress, close and cancel protection, responsive GTK, and actual GPT readback.\n"); return 0; }
     g_print("PASS: native GTK selection and mouse releases, two-edge resize, movement, Review with explicit in-use acknowledgement, Resize, Undo, current-size growth, responsive window layout with fixed side panes, map and row double-click actions, safe unmount and fresh usage checks, and no partition-table writes.\n");
     return 0;
 }

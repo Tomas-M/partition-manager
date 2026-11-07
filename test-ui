@@ -41,3 +41,11 @@ mkfs.fat -F 32 "$WORK/whole.img"
 LOOP=$(losetup --find --show "$WORK/whole.img")
 mount "$LOOP" "$WORK/mount"
 xvfb-run -a -s '-screen 0 1440x900x24' env G_DEBUG=fatal-criticals "$THIS/build/partition-manager-ui-test" --whole-device "$LOOP"
+
+# Apply reports real phases in a modal progress window, then verifies the actual GPT.
+truncate -s 128M "$WORK/apply.img"
+xvfb-run -a -s '-screen 0 1440x900x24' env G_DEBUG=fatal-criticals "$THIS/build/partition-manager-ui-test" --apply "$WORK/apply.img"
+
+# Create and remove an independently allocated loop to exercise actual udev notifications.
+truncate -s 128M "$WORK/events.img"
+xvfb-run -a -s '-screen 0 1440x900x24' env G_DEBUG=fatal-criticals "$THIS/build/partition-manager-ui-test" --events "$WORK/events.img"

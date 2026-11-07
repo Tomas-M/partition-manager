@@ -237,21 +237,20 @@ static void filesystem_geometry(Partition *part, const char *node)
     }
 }
 
-/* Read signatures directly because udev's cached filesystem data can be stale after mkfs. */
+/* Probe uncached JSON metadata, preserving spaces, literal backslashes and UTF-8 labels. */
 static void filesystem_probe(Partition *part, const char *node)
 {
-    const char *argv[]={"blkid", "-p", "-o", "export", node, NULL};
+    const char *argv[]={"blkid", "-p", "-o", "json", node, NULL};
     char *output=NULL;
     if (command_run(argv,NULL,-1,&output,NULL,NULL))
     {
-        char **lines=g_strsplit(output,"\n",-1);
-        for (char **line=lines; *line; line++)
+        JsonParser *parser=parse_json(output,NULL);
+        if (parser)
         {
-            if (g_str_has_prefix(*line,"TYPE=")) text_set(&part->fs,*line+5);
-            if (g_str_has_prefix(*line,"UUID=")) text_set(&part->fsuuid,*line+5);
-            if (g_str_has_prefix(*line,"LABEL=")) text_set(&part->fslabel,*line+6);
+            JsonObject *object=json_node_get_object(json_parser_get_root(parser));
+            text_set(&part->fs,js(object,"type")); text_set(&part->fsuuid,js(object,"uuid")); text_set(&part->fslabel,js(object,"label"));
+            g_object_unref(parser);
         }
-        g_strfreev(lines);
     }
     g_free(output);
 }
@@ -747,9 +746,21 @@ static gboolean lock_disk(int fd, GError **error)
     return TRUE;
 }
 
+/* Report completed phases; individual filesystem tools do not supply a shared percentage protocol. */
+static void apply_progress(ApplyOptions *options, const char *step, guint completed, guint total)
+{
+    if (options->progress) options->progress(step,completed,total,options->progress_data);
+}
+
 /* Pin, validate, back up and apply exactly the disk plan approved by the user. */
 gboolean engine_apply(Disk *disk, const char *backup_root, GString *log, ApplyOptions *options, GError **error)
 {
+    guint completed=0, total=3+layout_changed(disk);
+    for (guint i=0; i<disk->parts->len; i++)
+    {
+        Partition *part=disk->parts->pdata[i]; total+=*part->format || part->grow;
+    }
+    apply_progress(options,"Checking device",completed,total);
     if (!validate_plan(disk, error)) return FALSE;
     int fd=open(disk->path, O_RDWR|O_CLOEXEC|O_NOFOLLOW);
     if (fd<0) return fail(error, "Cannot open %s for writing: %s", disk->path, g_strerror(errno));
@@ -786,10 +797,12 @@ gboolean engine_apply(Disk *disk, const char *backup_root, GString *log, ApplyOp
         }
 
     }
+    if (result) apply_progress(options,"Backing up partition table",++completed,total);
     char *backup=result?make_backup(disk, backup_root, fd, log, error):NULL;
     if (result && !backup) result=FALSE;
     if (result && layout_changed(disk))
     {
+        apply_progress(options,"Writing partition table",++completed,total);
         char *script=disk_script(disk);
         result=write_table(script,fd,active,TRUE,log,error);
         if (result && disk->new_table) result=clear_device_signatures(fd,backup,log,error);
@@ -800,6 +813,7 @@ gboolean engine_apply(Disk *disk, const char *backup_root, GString *log, ApplyOp
     }
     if (result)
     {
+        apply_progress(options,"Verifying partition table",++completed,total);
         Disk *actual=engine_read(disk->path, error);
         result=actual && same_identity(disk, fd, error);
         if (result) result=verify_layout(disk, actual, error);
@@ -809,6 +823,8 @@ gboolean engine_apply(Disk *disk, const char *backup_root, GString *log, ApplyOp
     {
         Partition *part=disk->parts->pdata[i];
         if (!*part->format && !part->grow) continue;
+        char *step=g_strdup_printf("%s partition %u",*part->format?"Formatting":"Growing",part->number);
+        apply_progress(options,step,++completed,total); g_free(step);
         result=same_identity(disk, fd, error);
         gboolean needs_mount=part->grow && (!strcmp(part->fs, "xfs") || !strcmp(part->fs, "btrfs"));
         gboolean exclusive=!needs_mount && !(options->allow_busy && part->busy);
@@ -821,6 +837,7 @@ gboolean engine_apply(Disk *disk, const char *backup_root, GString *log, ApplyOp
         close(part_fd);
     }
     close(fd); g_free(backup);
+    if (result) apply_progress(options,"Changes complete",total,total);
     if (!result) g_string_append(log, "Stopped after an error. Completed writes are retained. Refresh to inspect the actual disk; no automatic rollback was attempted.\n");
     return result;
 }

@@ -14,8 +14,8 @@ An example Windows disk layout with EFI, System and Data partitions.
 
 ## Build and run
 
-On Debian 13, install `build-essential`, `pkg-config`, `libgtk-3-dev` and
-`libjson-glib-dev`, then run:
+On Debian 13, install `build-essential`, `pkg-config`, `libgtk-3-dev`,
+`libjson-glib-dev` and `libudev-dev`, then run:
 
 ```sh
 make
@@ -43,6 +43,7 @@ library dependencies derived by `dpkg-shlibdeps`.
 - GPT and the four primary partitions of MBR tables.
 - New partition tables default to GPT. Whole-device filesystems are shown without
   mistaking their boot sectors for an empty MBR table, including their mounts.
+  **New** opens the table dialog when a device has no GPT/MBR table.
 - The partition details pane is informational; actions stay in the toolbar.
 - Create, delete, rename GPT partitions, create a new table and repair a
   flashed image's GPT to use the full device.
@@ -58,6 +59,19 @@ library dependencies derived by `dpkg-shlibdeps`.
 - Double-click a map cell or row to create a partition in unallocated space,
   resize a partition, or rename it when resizing is unavailable. When GPT/MBR
   is absent, double-click opens the new partition table dialog.
+
+Whole-device udev events update the sidebar without polling or reloading existing
+layouts. Only newly connected devices are probed. Partition events are filtered
+out in the kernel; work is queued until disk jobs and dialogs finish. Existing
+rows and selection stay in place. Disconnected devices with pending changes or
+Undo history remain in the plan until those edits are discarded; Apply still
+verifies device identity and table contents before writing.
+
+Dialog actions stay together at the right edge, with the primary action before
+Cancel. Applying changes opens a modal progress bar showing device checks,
+backup, table writing and verification, then each filesystem operation. Progress
+counts completed phases rather than estimating elapsed time. The dialog cannot
+cancel a write or be closed while the operation is running.
 
 The GTK CSS and Cairo geometry implement the native window frame, allocation
 map, aligned table columns, detail panel and draggable editor directly.
@@ -80,8 +94,10 @@ Filesystem adapters deliberately cover these basic operations. Tool presence
 controls which adapters are offered. GPT/MBR type identifiers come from the
 running `sfdisk --list-types --label …`; no GUID catalogue is embedded.
 Inventory columns are discovered using `lsblk --list-columns --json`.
-Signatures are probed directly with `blkid` because udev's cached information
-can be stale immediately after formatting. Unmounted filesystem sizes come
+Signatures are probed directly with `blkid -p -o json` because udev's cached
+information can be stale immediately after formatting. JSON preserves labels
+containing spaces, backslashes and Unicode without export-format escaping.
+Unmounted filesystem sizes come
 from `tune2fs`, `xfs_db`, `btrfs inspect-internal` and `ntfsinfo`.
 
 The command protocols target util-linux 2.41 or newer and the tools supplied

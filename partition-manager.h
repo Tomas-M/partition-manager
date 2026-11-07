@@ -29,7 +29,8 @@ typedef struct
     const char *id, *name, *formatter, *grower;
     gboolean format_available, grow_available;
 } Filesystem;
-typedef struct { gboolean allow_busy, reboot_required; } ApplyOptions;
+typedef void (*ApplyProgress)(const char *step, guint completed, guint total, gpointer data);
+typedef struct { gboolean allow_busy, reboot_required; ApplyProgress progress; gpointer progress_data; } ApplyOptions;
 
 extern Filesystem filesystems[];
 extern const guint filesystem_count;
