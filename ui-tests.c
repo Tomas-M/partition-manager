@@ -160,6 +160,7 @@ static gboolean step(gpointer data)
         if (!workspace) return FALSE;
     }
     GtkWidget *list=partition_list(workspace), *modal=dialog();
+    g_assert_null(find(styled(workspace,"details"),GTK_TYPE_BUTTON,NULL));
     if (data)
     {
         if (!list) return FALSE;
@@ -175,6 +176,7 @@ static gboolean step(gpointer data)
         {
             if (!modal) return FALSE;
             g_assert_cmpstr(gtk_window_get_title(GTK_WINDOW(modal)),==,"New partition table");
+            g_assert_cmpstr(gtk_combo_box_get_active_id(GTK_COMBO_BOX(find(modal,GTK_TYPE_COMBO_BOX,NULL))),==,"gpt");
             int response=phase==3?GTK_RESPONSE_ACCEPT:GTK_RESPONSE_CANCEL;
             phase++; gtk_dialog_response(GTK_DIALOG(modal),response);
         }
@@ -187,9 +189,39 @@ static gboolean step(gpointer data)
         else if (phase==4 && !modal)
         {
             g_assert_true(gtk_widget_is_sensitive(find(workspace,GTK_TYPE_BUTTON,"review")));
+            if (GPOINTER_TO_INT(data)==2)
+            {
+                phase=5; gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"review")));
+            }
+            else
+            {
+                gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"undo")));
+                g_assert_false(gtk_widget_is_sensitive(find(workspace,GTK_TYPE_BUTTON,"review"))); gtk_main_quit();
+            }
+        }
+        else if (phase==5 || phase==6)
+        {
+            if (!modal || gtk_widget_get_visible(find(modal,GTK_TYPE_SPINNER,NULL))) return FALSE;
+            g_assert_true(gtk_widget_get_visible(find(modal,GTK_TYPE_BUTTON,"unmount")));
+            g_assert_true(gtk_widget_get_visible(find(modal,GTK_TYPE_CHECK_BUTTON,NULL)));
+            g_assert_false(gtk_widget_is_sensitive(gtk_dialog_get_widget_for_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT)));
+            if (phase==5) { held_mount=open(fixture_mount,O_RDONLY); g_assert_cmpint(held_mount,>=,0); }
+            else close(held_mount);
+            phase++; gtk_button_clicked(GTK_BUTTON(find(modal,GTK_TYPE_BUTTON,"unmount")));
+        }
+        else if (phase==7)
+        {
+            if (gtk_widget_get_visible(find(modal,GTK_TYPE_SPINNER,NULL))) return FALSE;
+            g_assert_nonnull(styled(modal,"disk-ready"));
+            g_assert_false(gtk_widget_get_visible(find(modal,GTK_TYPE_BUTTON,"unmount")));
+            g_assert_true(gtk_widget_is_sensitive(gtk_dialog_get_widget_for_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT)));
+            capture(modal,"/tmp/partitions-whole-device-ready.png");
+            phase=8; gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_CANCEL);
+        }
+        else if (phase==8 && !modal)
+        {
             gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"undo")));
-            g_assert_false(gtk_widget_is_sensitive(find(workspace,GTK_TYPE_BUTTON,"review")));
-            gtk_main_quit();
+            g_assert_false(gtk_widget_is_sensitive(find(workspace,GTK_TYPE_BUTTON,"review"))); gtk_main_quit();
         }
         return FALSE;
     }
@@ -456,13 +488,21 @@ static gboolean step(gpointer data)
 int main(int argc, char **argv)
 {
     gboolean empty_table=argc==3 && !strcmp(argv[1],"--empty-table");
-    g_assert_cmpint(argc,==,empty_table?3:2); const char *path=argv[argc-1];
+    gboolean whole_device=argc==3 && !strcmp(argv[1],"--whole-device");
+    g_assert_cmpint(argc,==,empty_table || whole_device?3:2); const char *path=argv[argc-1];
     g_assert_true(g_str_has_prefix(path,empty_table?"/tmp/":"/dev/loop"));
     GError *error=NULL; g_assert_true(engine_init(&error));
     Disk *before=engine_read(path,&error); g_assert_nonnull(before);
+    if (whole_device)
+    {
+        g_assert_cmpstr(before->label,==,""); g_assert_cmpuint(before->parts->len,==,1);
+        g_assert_cmpuint(((Partition *)before->parts->pdata[0])->number,==,0); g_assert_true(before->busy);
+    }
     fixture_path=g_strdup(path);
     if (!empty_table) fixture_mount=g_strdup(((Partition *)before->parts->pdata[0])->mount);
-    g_timeout_add(150,step,GINT_TO_POINTER(empty_table));
+    guint scenario=empty_table;
+    if (whole_device) scenario=2;
+    g_timeout_add(150,step,GUINT_TO_POINTER(scenario));
     char *args[]={argv[0],NULL}; ui_run(1,args,path,FALSE,TRUE);
     Disk *after=engine_read(path,&error); g_assert_nonnull(after);
     g_assert_cmpstr(before->snapshot,==,after->snapshot);

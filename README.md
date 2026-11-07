@@ -41,6 +41,9 @@ library dependencies derived by `dpkg-shlibdeps`.
 ## Scope and interaction
 
 - GPT and the four primary partitions of MBR tables.
+- New partition tables default to GPT. Whole-device filesystems are shown without
+  mistaking their boot sectors for an empty MBR table, including their mounts.
+- The partition details pane is informational; actions stay in the toolbar.
 - Create, delete, rename GPT partitions, create a new table and repair a
   flashed image's GPT to use the full device.
 - Resize edits pending partitions from either edge and moves them within their

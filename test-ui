@@ -32,3 +32,12 @@ make -C "$THIS" build/partition-manager-ui-test
 xvfb-run -a -s '-screen 0 1440x900x24' env G_DEBUG=fatal-criticals "$THIS/build/partition-manager-ui-test" "$LOOP"
 truncate -s 128M "$WORK/empty.img"
 xvfb-run -a -s '-screen 0 1440x900x24' env G_DEBUG=fatal-criticals "$THIS/build/partition-manager-ui-test" --empty-table "$WORK/empty.img"
+
+# Whole-device FAT can resemble an empty MBR while its mounted filesystem stays in use.
+if mountpoint -q "$WORK/mount"; then umount "$WORK/mount"; fi
+losetup -d "$LOOP"
+truncate -s 128M "$WORK/whole.img"
+mkfs.fat -F 32 "$WORK/whole.img"
+LOOP=$(losetup --find --show "$WORK/whole.img")
+mount "$LOOP" "$WORK/mount"
+xvfb-run -a -s '-screen 0 1440x900x24' env G_DEBUG=fatal-criticals "$THIS/build/partition-manager-ui-test" --whole-device "$LOOP"

@@ -315,6 +315,18 @@ Disk *engine_read(const char *path, GError **error)
         g_object_unref(parser);
     }
     g_free(output);
+    /* Whole-device filesystems may have a boot sector resembling an empty MBR. */
+    if (!disk->parts->len && (!table || !strcmp(disk->label,"dos")))
+    {
+        Partition *whole=partition_new(); filesystem_probe(whole,path);
+        if (*whole->fs)
+        {
+            text_set(&disk->label,""); text_set(&disk->id,"");
+            whole->size=disk->bytes/disk->sector; text_set(&whole->name,whole->fslabel);
+            g_ptr_array_add(disk->parts,whole);
+        }
+        else partition_free(whole);
+    }
     disk->original_last=disk->last;
     if (!disk->image)
     {
@@ -335,21 +347,12 @@ Disk *engine_read(const char *path, GError **error)
                 text_set(&disk->majmin, js(entry, "maj:min"));
                 if (*js(entry, "model")) { text_set(&disk->title, js(entry, "model")); g_strstrip(disk->title); }
                 disk->readonly=jn(entry, "ro");
-                if (!table && *js(entry, "fstype"))
-                {
-                    Partition *whole=partition_new();
-                    whole->size=disk->bytes/disk->sector;
-                    text_set(&whole->fs, js(entry, "fstype")); text_set(&whole->fsuuid, js(entry, "uuid"));
-                    text_set(&whole->name, js(entry, "label")); text_set(&whole->mount, mount);
-                    whole->busy=busy; whole->fsbytes=jn(entry, "fssize");
-                    g_ptr_array_add(disk->parts, whole);
-                }
             }
             disk->busy|=busy;
             for (guint j=0; j<disk->parts->len; j++)
             {
                 Partition *part=disk->parts->pdata[j];
-                char *expected=g_strdup_printf("%s%s%u", path, g_ascii_isdigit(path[strlen(path)-1])?"p":"", part->number);
+                char *expected=part->number?g_strdup_printf("%s%s%u", path, g_ascii_isdigit(path[strlen(path)-1])?"p":"", part->number):g_strdup(path);
                 if (!strcmp(expected, node))
                 {
                     text_set(&part->fs, js(entry, "fstype")); text_set(&part->fsuuid, js(entry, "uuid"));

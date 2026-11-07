@@ -543,7 +543,6 @@ static void render(App *app, gboolean rebuild_rows)
             char *fs_size=format_size(part->fsbytes), *text=g_strdup_printf("Filesystem: %s",fs_size);
             gtk_box_pack_start(GTK_BOX(app->details),label(text,"muted"),FALSE,FALSE,6); g_free(fs_size); g_free(text);
         }
-        if (!part->origin && part->number) gtk_box_pack_start(GTK_BOX(app->details),button(app,"Resize partition","up-right-and-down-left-from-center","resize"),FALSE,FALSE,12);
     }
     gtk_widget_show_all(app->details); g_free(name); g_free(capacity);
     guint pending=0;

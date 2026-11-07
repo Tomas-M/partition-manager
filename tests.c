@@ -285,6 +285,20 @@ static int integration(const char *path)
     g_free(backup); g_free(mount); g_free(node); g_free(marker); return 0;
 }
 
+/* A FAT filesystem starting at sector zero is not an empty MBR partition table. */
+static void test_whole_fat_filesystem(void)
+{
+    GError *error=NULL; g_assert_true(engine_init(&error));
+    char *directory=g_dir_make_tmp("partitions-test-fat-XXXXXX",&error), *path=g_build_filename(directory,"disk.img",NULL);
+    int fd=open(path,O_CREAT|O_RDWR,0600); g_assert_cmpint(fd,>=,0); g_assert_cmpint(ftruncate(fd,128*1048576),==,0); close(fd);
+    const char *format[]={"mkfs.fat","-F","32",path,NULL}; run(format);
+    Disk *disk=engine_read(path,&error); g_assert_nonnull(disk);
+    g_assert_cmpstr(disk->label,==,""); g_assert_cmpuint(disk->parts->len,==,1);
+    Partition *whole=disk->parts->pdata[0]; g_assert_cmpuint(whole->number,==,0);
+    g_assert_cmpstr(whole->fs,==,"vfat"); g_assert_cmpuint(whole->size,==,disk->bytes/disk->sector);
+    disk_free(disk); g_assert_cmpint(unlink(path),==,0); g_assert_cmpint(rmdir(directory),==,0); g_free(path); g_free(directory);
+}
+
 /* Run model/file tests by default; loop integration requires its explicit argument. */
 int main(int argc, char **argv)
 {
@@ -299,5 +313,6 @@ int main(int argc, char **argv)
     g_test_add_func("/model/device-icons",test_icons);
     g_test_add_func("/engine/file-tables-and-gpt-repair",test_file_tables);
     g_test_add_func("/engine/new-table-removes-filesystem-signature",test_new_table_signatures);
+    g_test_add_func("/engine/whole-device-fat-is-not-an-empty-mbr",test_whole_fat_filesystem);
     return g_test_run();
 }
