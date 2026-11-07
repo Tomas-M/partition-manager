@@ -121,6 +121,7 @@ static GtkWidget *make_dialog(App *app, const char *title, int width, const char
 {
     GtkWidget *dialog=gtk_dialog_new_with_buttons(title,GTK_WINDOW(app->window),GTK_DIALOG_MODAL|GTK_DIALOG_DESTROY_WITH_PARENT,accept,GTK_RESPONSE_ACCEPT,NULL);
     g_signal_connect_swapped(dialog,"destroy",G_CALLBACK(schedule_devices),app);
+    if (app->disks->len) g_object_set_data(G_OBJECT(dialog),"disk",app->disks->pdata[app->active]);
     style(dialog,"partitions-dialog"); gtk_window_set_default_size(GTK_WINDOW(dialog),width,-1);
     GtkWidget *header=gtk_header_bar_new(); gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(header),TRUE);
     gtk_header_bar_set_decoration_layout(GTK_HEADER_BAR(header),":close");
@@ -712,7 +713,7 @@ static GtkWidget *filesystem_combo(const char *current, gboolean empty)
     return combo;
 }
 
-/* Keep the empty state and selected workspace synchronized without discarding plans. */
+/* Keep the empty state and selected workspace synchronized with the current inventory. */
 static void show_devices(App *app, gboolean rebuild_rows)
 {
     gtk_stack_set_visible_child_name(GTK_STACK(app->content),app->disks->len?"disk":"empty");
@@ -740,7 +741,40 @@ static gboolean same_node(Disk *disk)
     return node.st_dev==disk->identity.st_dev && node.st_ino==disk->identity.st_ino && node.st_rdev==disk->identity.st_rdev;
 }
 
-/* Coalesce whole-device events and defer them while any dialog or disk job is active. */
+/* Drop a departed device's draft and undo entries before any deferred probing. */
+static void remove_device(App *app, guint index)
+{
+    Disk *disk=app->disks->pdata[index];
+    gboolean selection_changed=app->active==index;
+    GList *windows=gtk_window_list_toplevels();
+    for (GList *item=windows; item; item=item->next)
+    {
+        GtkWidget *dialog=item->data;
+        if (!GTK_IS_DIALOG(dialog) || dialog==app->progress || !gtk_widget_get_visible(dialog)) continue;
+        gboolean related=g_object_get_data(G_OBJECT(dialog),"disk")==disk;
+        if (g_object_get_data(G_OBJECT(dialog),"review") && disk_changed(disk)) related=TRUE;
+        if (related) gtk_dialog_response(GTK_DIALOG(dialog),GTK_RESPONSE_CANCEL);
+    }
+    g_list_free(windows);
+    g_signal_handlers_block_by_func(app->sidebar,disk_selected,app);
+    gtk_widget_destroy(GTK_WIDGET(gtk_list_box_get_row_at_index(GTK_LIST_BOX(app->sidebar),index)));
+    g_ptr_array_remove_index(app->disks,index);
+    for (guint i=app->history->len; i>0; i--)
+    {
+        Undo *undo=app->history->pdata[i-1];
+        if (undo->disk==index) g_ptr_array_remove_index(app->history,i-1);
+        else if (undo->disk>index) undo->disk--;
+    }
+    if (app->active>index) app->active--;
+    else if (app->active>=app->disks->len) app->active=0;
+    for (guint i=0; i<app->disks->len; i++) g_object_set_data(G_OBJECT(gtk_list_box_get_row_at_index(GTK_LIST_BOX(app->sidebar),i)),"index",GUINT_TO_POINTER(i));
+    if (app->disks->len) gtk_list_box_select_row(GTK_LIST_BOX(app->sidebar),gtk_list_box_get_row_at_index(GTK_LIST_BOX(app->sidebar),app->active));
+    g_signal_handlers_unblock_by_func(app->sidebar,disk_selected,app);
+    if (selection_changed) { app->selected=-1; app->free_start=0; }
+    show_devices(app,selection_changed);
+}
+
+/* Defer discovery while dialogs or disk jobs are active; removals are immediate. */
 static gboolean devices_idle(gpointer data)
 {
     App *app=data; app->device_idle=0;
@@ -749,39 +783,20 @@ static gboolean devices_idle(gpointer data)
     for (GList *item=windows; item; item=item->next) dialog|=GTK_IS_DIALOG(item->data) && gtk_widget_get_visible(item->data);
     g_list_free(windows); if (dialog) return G_SOURCE_REMOVE;
     Job *job=g_new0(Job,1); job->type=DISCOVER; job->plans=g_ptr_array_new_with_free_func(disk_free); job->log=g_string_new(NULL);
-    Disk *selected=app->disks->len?app->disks->pdata[app->active]:NULL;
-    gboolean changed=FALSE; GHashTableIter events; gpointer key;
-    g_signal_handlers_block_by_func(app->sidebar,disk_selected,app);
+    GHashTableIter events; gpointer key;
     g_hash_table_iter_init(&events,app->device_events);
     while (g_hash_table_iter_next(&events,&key,NULL))
     {
         const char *path=key; gint index=disk_index(app,path);
         if (index>=0)
         {
-            Disk *disk=app->disks->pdata[index];
-            if (same_node(disk)) { g_hash_table_iter_remove(&events); continue; }
-            gboolean keep=disk_changed(disk);
-            for (guint i=0; i<app->history->len; i++) keep|=((Undo *)app->history->pdata[i])->disk==(guint)index;
-            if (keep) continue;
-            gtk_widget_destroy(GTK_WIDGET(gtk_list_box_get_row_at_index(GTK_LIST_BOX(app->sidebar),index)));
-            g_ptr_array_remove_index(app->disks,index); changed=TRUE;
-            if (app->active>(guint)index) app->active--;
-            else if (app->active>=app->disks->len) app->active=0;
-            for (guint i=0; i<app->history->len; i++)
-            {
-                Undo *undo=app->history->pdata[i]; if (undo->disk>(guint)index) undo->disk--;
-            }
+            if (same_node(app->disks->pdata[index])) { g_hash_table_iter_remove(&events); continue; }
+            remove_device(app,index);
         }
         struct stat node;
         if (stat(path,&node)==0 && S_ISBLK(node.st_mode)) g_ptr_array_add(job->plans,disk_new(path));
         g_hash_table_iter_remove(&events);
     }
-    for (guint i=0; i<app->disks->len; i++) g_object_set_data(G_OBJECT(gtk_list_box_get_row_at_index(GTK_LIST_BOX(app->sidebar),i)),"index",GUINT_TO_POINTER(i));
-    if (app->disks->len) gtk_list_box_select_row(GTK_LIST_BOX(app->sidebar),gtk_list_box_get_row_at_index(GTK_LIST_BOX(app->sidebar),app->active));
-    g_signal_handlers_unblock_by_func(app->sidebar,disk_selected,app);
-    gboolean selection_changed=selected!=(app->disks->len?app->disks->pdata[app->active]:NULL);
-    if (selection_changed) { app->selected=-1; app->free_start=0; }
-    if (changed) show_devices(app,selection_changed);
     if (job->plans->len) launch_job(app,job); else job_free(job);
     return G_SOURCE_REMOVE;
 }
@@ -809,7 +824,13 @@ static gboolean device_event(gint fd, GIOCondition condition, gpointer data)
             if (g_strcmp0(udev_device_get_property_value(device,"ID_CDROM"),"1")==0) visible=FALSE;
             gint index=disk_index(app,path);
             if (!strcmp(action,"change") && index>=0 && same_node(app->disks->pdata[index])) visible=FALSE;
-            if (visible) g_hash_table_add(app->device_events,g_strdup(path));
+            if (visible)
+            {
+                gboolean removed=!strcmp(action,"remove");
+                if (index>=0 && (removed || !same_node(app->disks->pdata[index]))) remove_device(app,index);
+                if (removed) g_hash_table_remove(app->device_events,path);
+                else g_hash_table_add(app->device_events,g_strdup(path));
+            }
         }
         udev_device_unref(device);
     }
@@ -933,6 +954,7 @@ static void edit_partition(App *app, EditMode mode)
 static void save_layout(App *app)
 {
     GtkWidget *dialog=gtk_file_chooser_dialog_new("Save partition layout",GTK_WINDOW(app->window),GTK_FILE_CHOOSER_ACTION_SAVE,"Cancel",GTK_RESPONSE_CANCEL,"Save",GTK_RESPONSE_ACCEPT,NULL);
+    g_object_set_data(G_OBJECT(dialog),"disk",app->disks->pdata[app->active]);
     gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(dialog),"layout.sfdisk"); gtk_file_chooser_set_do_overwrite_confirmation(GTK_FILE_CHOOSER(dialog),TRUE);
     if (gtk_dialog_run(GTK_DIALOG(dialog))==GTK_RESPONSE_ACCEPT)
     {
@@ -1008,7 +1030,7 @@ static void review_done(GObject *source, GAsyncResult *result, gpointer data)
         for (guint n=0; n<app->disks->len; n++)
             if (!strcmp(((Disk *)app->disks->pdata[n])->path,current->path)) update_usage(app->disks->pdata[n],current);
     }
-    render(app,TRUE);
+    show_devices(app,TRUE);
     if (review->dialog)
     {
         GtkStyleContext *context=gtk_widget_get_style_context(review->feedback);
@@ -1135,7 +1157,7 @@ static void new_table_dialog(App *app)
     {
         remember(app); GError *error=NULL;
         if (!engine_new_table(disk,gtk_combo_box_get_active_id(GTK_COMBO_BOX(combo)),&error)) { message(app,"Cannot create table",error->message,NULL); g_clear_error(&error); }
-        app->selected=-1; app->free_start=0; render(app,TRUE);
+        app->selected=-1; app->free_start=0; show_devices(app,TRUE);
     }
     gtk_widget_destroy(dialog);
 }
@@ -1311,7 +1333,7 @@ static void job_done(GObject *source, GAsyncResult *result, gpointer data)
     }
     if (job->type==CHECK)
     {
-        render(app,TRUE); message(app,error?"Partition-table check failed":"Partition table checked",error?error->message:"sfdisk completed the partition-table check. Filesystems were not checked.",job->log->str); g_clear_error(&error); return;
+        show_devices(app,TRUE); message(app,error?"Partition-table check failed":"Partition table checked",error?error->message:"sfdisk completed the partition-table check. Filesystems were not checked.",job->log->str); g_clear_error(&error); return;
     }
     if (job->type==APPLY)
     {

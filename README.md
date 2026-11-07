@@ -64,10 +64,11 @@ library dependencies derived by `dpkg-shlibdeps`.
 
 Whole-device udev events update the sidebar without polling or reloading existing
 layouts. Only newly connected devices are probed. Partition events are filtered
-out in the kernel; work is queued until disk jobs and dialogs finish. Existing
-rows and selection stay in place. Disconnected devices with pending changes or
-Undo history remain in the plan until those edits are discarded; Apply still
-verifies device identity and table contents before writing.
+out in the kernel; discovery is queued until disk jobs and dialogs finish.
+Disconnected or replaced devices are removed immediately, discarding only their
+pending changes and Undo history without confirmation. Their editor or Review
+is cancelled; plans on other disks remain intact. Reconnecting starts with a
+fresh inventory. Apply still verifies device identity and table contents before writing.
 
 Dialog actions stay together at the right edge, with the primary action before
 Cancel. Applying changes opens a modal progress bar showing device checks,

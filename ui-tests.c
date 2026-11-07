@@ -547,7 +547,7 @@ static void remove_fixture(void)
     g_assert_cmpint(ioctl(loop_control,LOOP_CTL_REMOVE,loop_number),==,0);
 }
 
-/* Real udev add/remove events must defer modal updates and preserve pending plans. */
+/* Real removal drops the departed plan even while an editor or Review is open. */
 static gboolean events_step(gpointer data)
 {
     (void)data; g_timeout_add(150,events_step,NULL);
@@ -571,18 +571,9 @@ static gboolean events_step(gpointer data)
     }
     else if (phase==2)
     {
-        g_assert_true(row==stable_device); g_assert_nonnull(modal);
-        phase=3; gtk_dialog_response(GTK_DIALOG(modal),GTK_RESPONSE_ACCEPT);
-    }
-    else if (phase==3)
-    {
-        if (modal) return FALSE;
-        g_assert_true(row==stable_device); g_assert_true(gtk_widget_is_sensitive(review));
-        phase=4; gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"undo")));
-    }
-    else if (phase==4)
-    {
-        if (row) return FALSE;
+        if (row || modal) return FALSE;
+        g_assert_false(gtk_widget_is_sensitive(review));
+        g_assert_false(gtk_widget_is_sensitive(find(workspace,GTK_TYPE_BUTTON,"undo")));
         g_object_unref(stable_device); stable_device=NULL;
         g_assert_cmpint(ioctl(loop_control,LOOP_CTL_ADD,loop_number),==,loop_number);
         const char *attach[]={"losetup",fixture_path,fixture_image,NULL}; GError *error=NULL;
@@ -609,9 +600,33 @@ static gboolean events_step(gpointer data)
     {
         g_assert_true(row==stable_device); g_assert_true(gtk_widget_is_sensitive(review));
         capture(workspace,"/tmp/partition-manager-hotplug-plan.png");
-        gtk_button_clicked(GTK_BUTTON(find(workspace,GTK_TYPE_BUTTON,"undo"))); remove_fixture(); phase=9;
+        phase=9; gtk_button_clicked(GTK_BUTTON(review));
     }
-    else if (phase==9 && !row) { g_object_unref(stable_device); gtk_main_quit(); }
+    else if (phase==9)
+    {
+        g_assert_nonnull(modal); g_assert_cmpstr(gtk_window_get_title(GTK_WINDOW(modal)),==,"Review changes");
+        gboolean checking=FALSE; g_object_get(find(modal,GTK_TYPE_SPINNER,NULL),"active",&checking,NULL);
+        if (checking) return FALSE;
+        remove_fixture(); phase=10;
+    }
+    else if (phase==10)
+    {
+        if (row || modal || !gtk_widget_is_sensitive(styled(workspace,"device-list"))) return FALSE;
+        g_assert_false(gtk_widget_is_sensitive(review));
+        g_assert_false(gtk_widget_is_sensitive(find(workspace,GTK_TYPE_BUTTON,"undo")));
+        g_object_unref(stable_device); stable_device=NULL;
+        g_assert_cmpint(ioctl(loop_control,LOOP_CTL_ADD,loop_number),==,loop_number);
+        const char *attach[]={"losetup",fixture_path,fixture_image,NULL}; GError *error=NULL;
+        g_assert_true(command_run(attach,NULL,-1,NULL,NULL,&error)); phase=11;
+    }
+    else if (phase==11)
+    {
+        if (!row || !gtk_widget_is_sensitive(create)) return FALSE;
+        g_assert_false(gtk_widget_is_sensitive(review));
+        g_assert_false(gtk_widget_is_sensitive(find(workspace,GTK_TYPE_BUTTON,"undo")));
+        remove_fixture(); phase=12;
+    }
+    else if (phase==12 && !row) gtk_main_quit();
     return FALSE;
 }
 
@@ -629,7 +644,7 @@ int main(int argc, char **argv)
         g_assert_true(command_run(attach,NULL,-1,NULL,NULL,&error));
         g_timeout_add(150,events_step,NULL); char *args[]={argv[0],NULL}; ui_run(1,args,fixture_path,FALSE,TRUE);
         close(loop_control); g_free(fixture_path); g_free(fixture_image);
-        g_print("PASS: real udev add/remove/change events, deferred modal updates, stable sidebar rows and preserved pending plans.\n"); return 0;
+        g_print("PASS: immediate removal, cancelled editor/review, discarded plans and undo, clean reconnection, and unchanged-node plan preservation.\n"); return 0;
     }
     gboolean apply=argc==3 && !strcmp(argv[1],"--apply");
     gboolean empty_table=argc==3 && (!strcmp(argv[1],"--empty-table") || apply);
