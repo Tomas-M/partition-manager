@@ -493,17 +493,17 @@ static gboolean verify_layout(Disk *wanted, Disk *actual, GError **error)
     return TRUE;
 }
 
-/* A filesystem command must see the intended partition's kernel geometry. */
-static int open_partition(Disk *disk, Partition *part, gboolean exclusive, GError **error)
+/* Open with the requested access and verify the intended kernel geometry. */
+static int open_partition(Disk *disk, Partition *part, int mode, gboolean exclusive, GError **error)
 {
     if (disk->image) { fail(error, "Filesystem operations require a loop or block device, not a regular image file."); return -1; }
     char *path=part->number?g_strdup_printf("%s%s%u", disk->path, g_ascii_isdigit(disk->path[strlen(disk->path)-1])?"p":"", part->number):g_strdup(disk->path);
-    int fd=open(path, O_RDWR|O_CLOEXEC|O_NOFOLLOW|(exclusive?O_EXCL:0));
+    int fd=open(path, mode|O_CLOEXEC|O_NOFOLLOW|(exclusive?O_EXCL:0));
     if (fd<0) { fail(error, "Cannot open %s for this operation: %s", path, g_strerror(errno)); g_free(path); return -1; }
     /* Let the native tool acquire its own exclusive claim, keeping a pinned descriptor. */
     if (exclusive)
     {
-        close(fd); fd=open(path, O_RDWR|O_CLOEXEC|O_NOFOLLOW);
+        close(fd); fd=open(path, mode|O_CLOEXEC|O_NOFOLLOW);
         if (fd<0) { fail(error, "The selected partition is no longer available."); g_free(path); return -1; }
     }
     struct stat identity;
@@ -536,7 +536,7 @@ gboolean engine_unmount(Disk *disk, GError **error)
     for (guint i=current->parts->len; i>0; i--)
     {
         Partition *part=current->parts->pdata[i-1]; if (part->mount[0]!='/') continue;
-        GError *local=NULL; int fd=open_partition(current,part,FALSE,&local);
+        GError *local=NULL; int fd=open_partition(current,part,O_RDONLY,FALSE,&local);
         if (fd>=0)
         {
             const char *argv[]={"umount","--all-targets","--","/proc/self/fd/3",NULL};
@@ -775,7 +775,7 @@ gboolean engine_apply(Disk *disk, const char *backup_root, GString *log, ApplyOp
         /* Reject mounted or unhealthy NTFS before enlarging its partition on disk. */
         if (result && part->grow && !strcmp(id,"ntfs"))
         {
-            Partition *original=find_part(disk->base,part->origin); int part_fd=open_partition(disk,original,TRUE,error);
+            Partition *original=find_part(disk->base,part->origin); int part_fd=open_partition(disk,original,O_RDWR,TRUE,error);
             result=part_fd>=0 && verify_filesystem(original,part_fd,error);
             const char *check[]={"ntfsresize","--info","/proc/self/fd/3",NULL};
             if (result) result=command_run(check,NULL,part_fd,NULL,NULL,error);
@@ -809,7 +809,7 @@ gboolean engine_apply(Disk *disk, const char *backup_root, GString *log, ApplyOp
         result=same_identity(disk, fd, error);
         gboolean needs_mount=part->grow && (!strcmp(part->fs, "xfs") || !strcmp(part->fs, "btrfs"));
         gboolean exclusive=!needs_mount && !(options->allow_busy && part->busy);
-        int part_fd=result?open_partition(disk, part, exclusive, error):-1;
+        int part_fd=result?open_partition(disk, part, O_RDWR, exclusive, error):-1;
         if (part_fd<0) { result=FALSE; break; }
         result=verify_filesystem(part, part_fd, error) && same_identity(disk, fd, error);
         if (result && *part->format) result=format_partition(part, part_fd, log, options->allow_busy, error);

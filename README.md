@@ -97,7 +97,8 @@ unmount filesystems or deactivate mappings. Affecting a mounted filesystem
 can corrupt its data or stop the running system.
 
 Review offers **Unmount partitions** for mounted filesystems. This explicit
-action uses ordinary unmounts, including bind mounts of the same filesystem;
+action opens partitions read-only, avoiding write-close notifications that
+trigger automounters. It uses ordinary unmounts, including bind mounts of the same filesystem;
 it never forces or lazily detaches a busy mount, disables swap, or deactivates
 mappings. A new usage check shows a green ready confirmation only when no
 active uses remain. Otherwise the warning and acknowledgement remain. Pending

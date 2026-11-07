@@ -1,10 +1,12 @@
 #define _GNU_SOURCE
 #include "partition-manager.h"
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/inotify.h>
 #include <unistd.h>
 
 /* Unit tests use an ordinary four-extent disk with no host device access. */
@@ -230,6 +232,9 @@ static int integration(const char *path)
     g_assert_cmpstr(contents,==,"Data survives filesystem growth.\n"); g_free(contents);
     part->size=224*1048576/disk->sector;
     g_assert_false(engine_apply(disk,backup,log,&options,&error)); g_assert_nonnull(strstr(error->message,"in use")); g_clear_error(&error);
+    /* Neither busy nor successful unmounts may signal a writable-device close to udev. */
+    int events=inotify_init1(IN_NONBLOCK|IN_CLOEXEC); g_assert_cmpint(events,>=,0);
+    g_assert_cmpint(inotify_add_watch(events,node,IN_CLOSE_WRITE),>=,0);
     /* A process using the mount must prevent unmount; retrying preserves the plan. */
     int held=open(marker,O_RDONLY); g_assert_cmpint(held,>=,0);
     g_assert_false(engine_unmount(disk,&error)); g_assert_nonnull(error); g_clear_error(&error);
@@ -237,6 +242,8 @@ static int integration(const char *path)
     char *bind=g_dir_make_tmp("partitions-test-mount-é space-XXXXXX",&error);
     const char *bind_argv[]={"mount","--bind",mount,bind,NULL}; run(bind_argv);
     g_assert_true(engine_unmount(disk,&error)); g_assert_no_error(error);
+    char event[sizeof(struct inotify_event)];
+    g_assert_cmpint(read(events,event,sizeof(event)),==,-1); g_assert_cmpint(errno,==,EAGAIN); close(events);
     const char *still_mounted[]={"findmnt","--mountpoint",bind,NULL};
     g_assert_false(command_run(still_mounted,NULL,-1,NULL,NULL,&error)); g_clear_error(&error);
     g_assert_cmpint(rmdir(bind),==,0); g_free(bind);
