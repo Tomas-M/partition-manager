@@ -340,10 +340,13 @@ static gboolean map_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
 {
     App *app=data;
     if (!app->disks->len) return FALSE;
-    Disk *disk=app->disks->pdata[app->active];
+    Disk *disk=app->disks->pdata[app->active]; gboolean missing_table=!*disk->label;
     double width=gtk_widget_get_allocated_width(widget);
-    rounded(cr,.5,.5,width-1,67,6); cairo_set_source_rgb(cr,250/255.,251/255.,248/255.); cairo_fill_preserve(cr);
-    cairo_set_source_rgb(cr,220/255.,225/255.,220/255.); cairo_set_line_width(cr,1); cairo_stroke(cr);
+    rounded(cr,.5,.5,width-1,67,6);
+    if (missing_table) cairo_set_source_rgb(cr,.97,.97,.97); else cairo_set_source_rgb(cr,250/255.,251/255.,248/255.);
+    cairo_fill_preserve(cr);
+    if (missing_table) cairo_set_source_rgb(cr,.85,.85,.85); else cairo_set_source_rgb(cr,220/255.,225/255.,220/255.);
+    cairo_set_line_width(cr,1); cairo_stroke(cr);
     GArray *list=tiles(app, gtk_widget_get_allocated_width(widget));
     for (guint i=0; i<list->len; i++)
     {
@@ -351,16 +354,20 @@ static gboolean map_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
         guint index=part?MAX(1,part->number)-1:0;
         const double *color=colors[index%4], *foreground=text_colors[index%4];
         rounded(cr,tile.x,6,tile.width,56,3);
-        if (part) { cairo_set_source_rgb(cr,color[0],color[1],color[2]); cairo_fill(cr); }
+        if (missing_table) { cairo_set_source_rgb(cr,.90,.90,.90); cairo_fill(cr); }
+        else if (part) { cairo_set_source_rgb(cr,color[0],color[1],color[2]); cairo_fill(cr); }
         else hatch(cr,tile.x,6,tile.width,56);
         gboolean selected=app->selected==tile.item.number && (part || app->free_start==tile.item.start);
         cairo_set_line_width(cr,selected?2:1);
-        if (selected) cairo_set_source_rgb(cr,75/255.,131/255.,93/255.);
+        if (missing_table) cairo_set_source_rgb(cr,.65,.65,.65);
+        else if (selected) cairo_set_source_rgb(cr,75/255.,131/255.,93/255.);
         else cairo_set_source_rgba(cr,0,0,0,.05);
         rounded(cr,tile.x+.5,6.5,tile.width-1,55,3); cairo_stroke(cr);
         char *title=part?part_title(part):g_strdup(tile.item.number==-2?"Needs GPT repair":"Unallocated");
-        char *size=format_size(tile.item.size*disk->sector);
-        if (part) cairo_set_source_rgb(cr,foreground[0],foreground[1],foreground[2]); else cairo_set_source_rgb(cr,101/255.,115/255.,91/255.);
+        if (missing_table) { g_free(title); title=g_strdup("Missing partition table"); }
+        char *size=format_size(missing_table?disk->bytes:tile.item.size*disk->sector);
+        if (missing_table) cairo_set_source_rgb(cr,.38,.38,.38);
+        else if (part) cairo_set_source_rgb(cr,foreground[0],foreground[1],foreground[2]); else cairo_set_source_rgb(cr,101/255.,115/255.,91/255.);
         if (tile.width>40) draw_text(widget,cr,title,tile.x+10,15,tile.width-20,FALSE);
         else if (part)
         {
@@ -368,7 +375,7 @@ static gboolean map_draw(GtkWidget *widget, cairo_t *cr, gpointer data)
         }
         if (tile.width>65)
         {
-            if (part) cairo_set_source_rgba(cr,foreground[0],foreground[1],foreground[2],.7);
+            if (part && !missing_table) cairo_set_source_rgba(cr,foreground[0],foreground[1],foreground[2],.7);
             draw_text(widget,cr,size,tile.x+10,34,tile.width-20,TRUE);
         }
         g_free(title); g_free(size);
@@ -452,6 +459,7 @@ static void render(App *app, gboolean rebuild_rows)
 {
     if (!app->disks->len) return;
     Disk *disk=app->disks->pdata[app->active]; Item chosen=selection(app); Partition *part=selected_part(app);
+    gboolean missing_table=!*disk->label;
     g_signal_handlers_block_by_func(app->sidebar,disk_selected,app);
     gtk_list_box_select_row(GTK_LIST_BOX(app->sidebar),gtk_list_box_get_row_at_index(GTK_LIST_BOX(app->sidebar),app->active));
     g_signal_handlers_unblock_by_func(app->sidebar,disk_selected,app);
@@ -481,7 +489,8 @@ static void render(App *app, gboolean rebuild_rows)
     gtk_widget_show_all(app->notice);
     gboolean editable=!disk->readonly && !disk->unsupported && !app->working;
     gboolean free_space=chosen.number==-1 && chosen.size*disk->sector>=4194304;
-    gtk_widget_set_sensitive(app->create, editable && (!*disk->label || free_space));
+    gtk_label_set_text(GTK_LABEL(g_object_get_data(G_OBJECT(app->create),"caption")),missing_table?"New partition table":"New partition");
+    gtk_widget_set_sensitive(app->create, editable && (missing_table || free_space));
     GtkStyleContext *create_style=gtk_widget_get_style_context(app->create);
     if (editable && (!part || !*disk->label)) gtk_style_context_add_class(create_style,"suggested-action"); else gtk_style_context_remove_class(create_style,"suggested-action");
     gtk_widget_set_sensitive(app->edit, editable && part && part->number && (!part->origin || !strcmp(disk->label,"gpt")));
@@ -505,6 +514,11 @@ static void render(App *app, gboolean rebuild_rows)
         style(row,"partition-row"); gtk_widget_set_size_request(row,-1,57);
         char *name=entry?part_title(entry):g_strdup(item.number==-2?"Unaddressed space":"Unallocated space");
         char *path=entry?part_path(disk,entry):g_strdup(item.number==-2?"Repair GPT to address this space":"Available for a new partition");
+        if (missing_table && !entry)
+        {
+            g_free(name); name=g_strdup("Missing partition table");
+            g_free(path); path=g_strdup("Create a partition table to add partitions");
+        }
         GtkWidget *heading=label(name,"row-name"), *sub=label(path,"row-subtitle"); ellipsize(heading); ellipsize(sub);
         gtk_box_pack_start(GTK_BOX(text),heading,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(text),sub,FALSE,FALSE,0);
         GtkWidget *name_cell=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,9), *dot=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,0);
@@ -514,7 +528,7 @@ static void render(App *app, gboolean rebuild_rows)
         gtk_box_pack_start(GTK_BOX(name_cell),dot,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(name_cell),text,TRUE,TRUE,0);
         GtkWidget *fs=label(entry?fs_name(entry):item.number==-2?"Needs repair":"Unpartitioned","row-type"); ellipsize(fs);
         gtk_box_pack_start(GTK_BOX(box),table_columns(name_cell,fs),TRUE,TRUE,0);
-        char *capacity=format_size(item.size*disk->sector);
+        char *capacity=format_size(missing_table && !entry?disk->bytes:item.size*disk->sector);
         GtkWidget *capacity_label=label(capacity,"row-size"); gtk_size_group_add_widget(app->size_group,capacity_label); gtk_label_set_xalign(GTK_LABEL(capacity_label),1);
         gtk_box_pack_start(GTK_BOX(box),capacity_label,FALSE,FALSE,0); gtk_container_add(GTK_CONTAINER(row),box);
         Item *stored=g_memdup2(&item,sizeof item); g_object_set_data_full(G_OBJECT(row),"item",stored,g_free);
@@ -529,14 +543,21 @@ static void render(App *app, gboolean rebuild_rows)
     g_array_unref(regions);
     char *used=format_size(total_allocated), *left=format_size(total_free), *caption=g_strdup_printf("%u %s  ·  %s allocated",disk->parts->len,disk->parts->len==1?"partition":"partitions",used), *available=g_strdup_printf("%s unallocated",left);
     gboolean needs_repair=!strcmp(disk->label,"gpt") && disk->last<capacity_last(disk);
-    gtk_label_set_text(GTK_LABEL(app->allocated),caption); gtk_label_set_text(GTK_LABEL(app->available),needs_repair?"GPT repair needed":available);
+    gtk_label_set_text(GTK_LABEL(app->allocated),missing_table?"Missing partition table":caption);
+    if (missing_table) gtk_label_set_text(GTK_LABEL(app->available),"");
+    else gtk_label_set_text(GTK_LABEL(app->available),needs_repair?"GPT repair needed":available);
     g_free(used); g_free(left); g_free(caption); g_free(available);
     clear(app->details);
     char *name=part?part_title(part):g_strdup(chosen.number==-2?"GPT needs repair":"Unallocated space"), *capacity=format_size(chosen.size*disk->sector);
+    if (missing_table && !part)
+    {
+        g_free(name); name=g_strdup("Missing partition table"); g_free(capacity); capacity=format_size(disk->bytes);
+    }
     gtk_box_pack_start(GTK_BOX(app->details),label(name,"detail-title"),FALSE,FALSE,0);
     GtkWidget *metric=label(capacity,"capacity"); gtk_widget_set_margin_top(metric,13); gtk_widget_set_margin_bottom(metric,20);
     gtk_box_pack_start(GTK_BOX(app->details),metric,FALSE,FALSE,0);
     const char *hint=part?"Existing partitions stay in place.":"Create a partition here to make room for your files.";
+    if (missing_table) hint="Create a partition table before adding partitions.";
     if (chosen.number==-2) hint="Repair the GPT layout to use the rest of this disk.";
     GtkWidget *note=label(hint,"detail-hint"); gtk_label_set_line_wrap(GTK_LABEL(note),TRUE); gtk_label_set_max_width_chars(GTK_LABEL(note),26);
     gtk_widget_set_margin_bottom(note,17); gtk_box_pack_start(GTK_BOX(app->details),note,FALSE,FALSE,0);
@@ -1418,7 +1439,7 @@ int ui_run(int argc, char **argv, const char *only, gboolean readonly, gboolean 
     gtk_box_pack_start(GTK_BOX(tools),button(&app,"Check","check","check"),FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(tools),button(&app,NULL,"circle-info","info"),FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(tools),button(&app,NULL,"floppy-disk","save"),FALSE,FALSE,0); gtk_box_pack_end(GTK_BOX(heading),tools,FALSE,FALSE,0);
     gtk_box_pack_start(GTK_BOX(main),heading,FALSE,FALSE,0); app.notice=gtk_box_new(GTK_ORIENTATION_VERTICAL,8); gtk_box_pack_start(GTK_BOX(main),app.notice,FALSE,FALSE,0);
     GtkWidget *toolbar=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,6); style(toolbar,"toolbar");
-    app.create=button(&app,"New","plus","create"); app.edit=button(&app,"Rename","pen-to-square","edit"); app.resize=button(&app,"Resize","up-right-and-down-left-from-center","resize"); app.format=button(&app,"Format","eraser","format"); app.remove=button(&app,NULL,"trash-can","delete");
+    app.create=button(&app,"New partition","plus","create"); app.edit=button(&app,"Rename","pen-to-square","edit"); app.resize=button(&app,"Resize","up-right-and-down-left-from-center","resize"); app.format=button(&app,"Format","eraser","format"); app.remove=button(&app,NULL,"trash-can","delete");
     gtk_box_pack_start(GTK_BOX(toolbar),app.create,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(toolbar),app.edit,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(toolbar),app.resize,FALSE,FALSE,0); gtk_box_pack_start(GTK_BOX(toolbar),app.format,FALSE,FALSE,0);
     GtkWidget *divider=gtk_separator_new(GTK_ORIENTATION_VERTICAL); style(divider,"toolbar-divider"); gtk_box_pack_start(GTK_BOX(toolbar),divider,FALSE,FALSE,5);
     gtk_box_pack_start(GTK_BOX(toolbar),app.remove,FALSE,FALSE,0); GtkWidget *new_table=button(&app,"New table…",NULL,"new-table"); style(new_table,"link-button"); gtk_box_pack_end(GTK_BOX(toolbar),new_table,FALSE,FALSE,0);
